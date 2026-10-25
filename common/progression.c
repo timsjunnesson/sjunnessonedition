@@ -49,6 +49,13 @@ typedef struct {
     uint32_t ms_bits;
 } fish_save_t;
 
+/* the greyhound mod: its saved fields sit at MOD_TAIL_AT, a gap past
+ * upstream's last field (see the tail of save_t); MOD_MAGIC marks a tail the
+ * mod wrote. Its first builds (on 0.3.8.1) put them at 1908..1931 and the
+ * dog and the ball at sd_unlocks bits 9 and 10 - since taken by the volcano
+ * and the crab: load_save moves such a save over (MOD_OLD_*). */
+#define MOD_TAIL_AT   2304
+#define MOD_MAGIC     0x31444847u                                /* "GHD1" */
 typedef struct {
     uint32_t magic;
     int64_t  saved_unix;
@@ -221,6 +228,23 @@ typedef struct {
      * again, a find soon for every keeper who updates. Until then a boot
      * started the wait again at 2-4 h of awake time. */
     uint32_t cr_find_wait;
+    /* ---- the greyhound mod's tail ----
+     * Upstream appends its fields above, after cr_find_wait; the mod's sit
+     * past a reserved gap at MOD_TAIL_AT, so a later upstream field lands in
+     * the gap (zeros in every mod save: "older saves read zeros") and never
+     * on the dog. When a sync adds upstream fields, put them above the gap
+     * and shrink pad_mod_gap so mod_magic stays at MOD_TAIL_AT.
+     * mod_magic = MOD_MAGIC once the tail has been written (else zeros). */
+    uint8_t  pad_mod_gap[MOD_TAIL_AT - 1940];
+    uint32_t mod_magic;
+    /* the greyhound's life with the keeper: its time, its pats, its fetches,
+     * its name (GH_NAMES index + 1, 0 = none: one is given) */
+    float    gh_s;
+    int32_t  gh_pets, gh_fetches;
+    uint8_t  gh_name, pad_gh[3];
+    /* the shop's extras: the steps bought, the packs left */
+    uint8_t  up_dog, up_ball, pad_up[2];
+    int16_t  fine_left, treats_left;
 } save_t;
 /* the smallest PTK2 save (pre-upkeep, 2026-08-30): anything shorter is not
  * ours. Every later build wrote sizeof(save_t) of its day - 448, 1112, 1304,
@@ -323,6 +347,10 @@ _Static_assert(sizeof(save_t) >= 1936, "SAVE LAYOUT LOCK: save_t only ever grows
 SAVE_AT(cr_find_wait, 1936);                                                                           /* the wait for its next find, 0.3.9.1 (main's 0.4 tail must reserve 1936..1939) */
 _Static_assert(sizeof(save_t) >= 1944, "SAVE LAYOUT LOCK: save_t only ever grows");   /* 1940 of fields, padded to 8 */
 /* (the next field: SAVE_AT(its_name, 1940 or its type's alignment past it);) */
+SAVE_AT(mod_magic, MOD_TAIL_AT);                                                                       /* the greyhound mod's tail, past the gap */
+SAVE_AT(gh_s, MOD_TAIL_AT + 4); SAVE_AT(gh_pets, MOD_TAIL_AT + 8); SAVE_AT(gh_fetches, MOD_TAIL_AT + 12); SAVE_AT(gh_name, MOD_TAIL_AT + 16);
+SAVE_AT(up_dog, MOD_TAIL_AT + 20); SAVE_AT(up_ball, MOD_TAIL_AT + 21); SAVE_AT(fine_left, MOD_TAIL_AT + 24); SAVE_AT(treats_left, MOD_TAIL_AT + 26);
+_Static_assert(sizeof(save_t) == MOD_TAIL_AT + 32, "the mod's tail: 28 bytes of fields, padded to 8");
 /* NVS budget: the save is one blob in the nvs partition (0x9000, 0x6000 =
  * 6 pages of 4096 B; tools/make_installer.py pins the row). A page is 126
  * entries of 32 B, and NVS keeps one page free for its garbage collection:
@@ -394,6 +422,8 @@ const sd_item_t SD_ITEMS[SD_ITEM_COUNT] = {
     { SD_ITEM_PUMPKIN, "PUMPKIN",    "GLOWS WHEN THE LIGHTS GO OUT", "FOR OCTOBER, YOURS TO KEEP", SD_PRICE_PUMPKIN },  /* 0.3.6: the seasonal lantern (Strato 10-17) */
     { SD_ITEM_VOLCANO, "VOLCANO",    "A CONE OF ROCK AND LAVA,",    "GLOWING BUBBLES RISE FROM IT", SD_PRICE_VOLCANO },  /* 0.3.9: DonB's bubble volcano (28 chars, as the plant's) */
     { SD_ITEM_CRAB,    "STRAWBERRY CRAB", "DIGS UP SAND DOLLARS,",      "NAPS IN THE CASTLE OR CAVE", SD_PRICE_CRAB },  /* 0.3.9: the strawberry crab (Vulcanite's crab, Strato's strawberry sheets) */
+    { SD_ITEM_GREYHOUND, "GREYHOUND", "A RACING DOG, NOW A SWIMMER", "PADDLES LAPS ROUND THE FISH", SD_PRICE_GREYHOUND },  /* a resident, like the snail (27 chars) */
+    { SD_ITEM_BALL, "BALL", "A BALL FOR THE GREYHOUND", "TAP IT TO THROW, IT FETCHES", SD_PRICE_BALL },
 };
 /* the pumpkin's season (0.3.6; Strato 2026-10-17: "it can remain on their
  * board until they upgrade ... whatever release comes after oct 31 will
@@ -512,6 +542,48 @@ bool progression_sell_fish(tank_t *t, int fish) {
     progression_save(t);                                   /* a sale sticks at once */
     return true;
 }
+/* ---- the shop's extras: steps and packs (the greyhound mod) ---- */
+static const sd_step_t DOG_STEPS[3] = {
+    { "GOLD COLLAR", "A GOLD COLLAR AND TAG",     "FOR THE FINEST DOG",          250 },
+    { "DIVE MASK",   "A MASK FOR THE DEEP",       "IT SEES THE FISH BETTER",     700 },
+    { "LOOP TRICK",  "PAT IT AND IT LOOPS",       "A LOOP THE LOOP IN THE WATER", 1500 } };
+static const sd_step_t BALL_STEPS[2] = {
+    { "RUBBER DUCK", "THE BALL BECOMES A DUCK",   "IT FETCHES THAT TOO",         200 },
+    { "FRISBEE",     "THE DUCK BECOMES A FRISBEE", "A DISC THROUGH THE WATER",   600 } };
+static const sd_step_t FINE_PACK  = { "FINE FOOD",  "12 GOLDEN PELLETS",         "MORE TRUST AND A SHINE", 40 };
+static const sd_step_t TREAT_PACK = { "DOG TREATS", "5 BONES FOR THE GREYHOUND", "PAT IT FOR A TREAT",     30 };
+bool progression_extra_offered(const tank_t *t, int k) {
+    switch (k) {
+    case SD_EX_DOG: case SD_EX_TREATS: return (t->sd_unlocks & SD_ITEM_GREYHOUND) != 0;
+    case SD_EX_BALL: return (t->sd_unlocks & SD_ITEM_BALL) != 0;
+    case SD_EX_FINE: return true;
+    }
+    return false;
+}
+bool progression_extra_is_pack(int k) { return k == SD_EX_FINE || k == SD_EX_TREATS; }
+int  progression_extra_steps(int k) { return k == SD_EX_DOG ? 3 : k == SD_EX_BALL ? 2 : 0; }
+int  progression_extra_level(const tank_t *t, int k) {
+    return k == SD_EX_DOG ? t->up_dog : k == SD_EX_BALL ? t->up_ball : k == SD_EX_FINE ? t->fine_left : k == SD_EX_TREATS ? t->treats_left : 0;
+}
+const sd_step_t *progression_extra_next(const tank_t *t, int k) {
+    if (k == SD_EX_DOG)  return t->up_dog < 3 ? &DOG_STEPS[t->up_dog] : NULL;
+    if (k == SD_EX_BALL) return t->up_ball < 2 ? &BALL_STEPS[t->up_ball] : NULL;
+    if (k == SD_EX_FINE) return t->fine_left <= 99 - SD_FINE_PACK ? &FINE_PACK : NULL;
+    if (k == SD_EX_TREATS) return t->treats_left <= 99 - SD_TREAT_PACK ? &TREAT_PACK : NULL;
+    return NULL;
+}
+bool progression_buy_extra(tank_t *t, int k) {
+    if (k < 0 || k >= SD_EX_COUNT || !progression_extra_offered(t, k)) return false;
+    const sd_step_t *st = progression_extra_next(t, k);
+    if (!st || t->sd_balance < st->price) return false;
+    t->sd_balance -= st->price;
+    if (k == SD_EX_DOG) t->up_dog++;
+    else if (k == SD_EX_BALL) t->up_ball++;
+    else if (k == SD_EX_FINE) t->fine_left += SD_FINE_PACK;
+    else t->treats_left += SD_TREAT_PACK;
+    progression_settings_changed();                                  /* saved soon, not at the next heartbeat */
+    return true;
+}
 bool progression_buy(tank_t *t, int item) {
     if (item < 0 || item >= SD_ITEM_COUNT) return false;
     const sd_item_t *it = &SD_ITEMS[item];
@@ -529,6 +601,8 @@ bool progression_buy(tank_t *t, int item) {
     if (it->bit == SD_ITEM_PUMPKIN) tank_pumpkin_place(t);
     if (it->bit == SD_ITEM_VOLCANO) tank_volcano_place(t);
     if (it->bit == SD_ITEM_CRAB) { t->cr_variant = (uint8_t)(tank_randf(t, 0, 255.999f)); tank_crab_place(t); }   /* its seed pattern is drawn once, at the sale */
+    if (it->bit == SD_ITEM_GREYHOUND) { t->gh_name = 0; t->gh_s = 0; t->gh_pets = 0; t->gh_fetches = 0; tank_greyhound_place(t); }
+    if (it->bit == SD_ITEM_BALL) tank_ball_place(t);
     if (tank_decor_placeable(item)) tank_decor_raise(t, item);   /* the piece placed last goes on top (2026-10-17) */
     progression_save(t);                                   /* a purchase sticks at once */
     return true;
@@ -899,6 +973,32 @@ static bool load_save(tank_t *t, int64_t *saved_unix) {
         memmove(&sv.ms_seen, &sv.bubble_x, sizeof sv.ms_seen + sizeof sv.tank_ms_seen);
         sv.bubble_x = 0;                       /* = the default column */
     }
+    float mod_old_s = 0;                       /* the old mod's gh_s, where 0.3.9 keeps sd_shelved (a small bitmask: a float under 1e-38) */
+    if (got > 1912) memcpy(&mod_old_s, (const uint8_t *)&sv + 1908, 4);
+    if (sv.mod_magic != MOD_MAGIC && got > 1912 && got <= 1936 && sv.saved_release < 0x00030900u
+        && (sv.sd_unlocks & (1u << 9)) && mod_old_s >= 1.0f && mod_old_s < 1e9f) {   /* (0.3.9's own pre-release saves: no dog's seconds there) */
+        /* the greyhound mod's first saves (built on 0.3.8.1, 1928 or 1936
+         * bytes): the dog's life at 1908..1931, where 0.3.9 keeps the shelf,
+         * the volcano, the LOCKs and the crab - move it to the mod's tail,
+         * clear upstream's fields (they never had them), and move the dog and
+         * the ball from sd_unlocks bits 9 and 10 (now the volcano and the crab). */
+        const uint8_t *raw = (const uint8_t *)&sv;
+        float gs; int32_t gp, gf; int16_t fl = 0, tl = 0;
+        memcpy(&gs, raw + 1908, 4); memcpy(&gp, raw + 1912, 4); memcpy(&gf, raw + 1916, 4);
+        uint8_t gn = raw[1920], ud = got >= 1936 ? raw[1924] : 0, ub = got >= 1936 ? raw[1925] : 0;
+        if (got >= 1936) { memcpy(&fl, raw + 1928, 2); memcpy(&tl, raw + 1930, 2); }
+        memset((uint8_t *)&sv + 1908, 0, sizeof sv - 1908);
+        uint32_t u = sv.sd_unlocks, dog = u & (1u << 9), ball = u & (1u << 10);
+        u &= ~((1u << 9) | (1u << 10));
+        if (dog) u |= SD_ITEM_GREYHOUND;
+        if (ball) u |= SD_ITEM_BALL;
+        sv.sd_unlocks = u;
+        sv.mod_magic = MOD_MAGIC; sv.gh_s = gs; sv.gh_pets = gp; sv.gh_fetches = gf; sv.gh_name = gn;
+        sv.up_dog = ud; sv.up_ball = ub; sv.fine_left = fl; sv.treats_left = tl;
+        got = sizeof sv;
+    }
+    if (sv.mod_magic != MOD_MAGIC)             /* no mod tail (an upstream save): the dog's fields read zeros */
+        memset(&sv.mod_magic, 0, sizeof sv - offsetof(save_t, mod_magic));
     *saved_unix = sv.saved_unix; s_loaded_unix = sv.saved_unix;
     s_loaded_release = sv.saved_release;
     t->n_fish = 0;
@@ -1003,6 +1103,16 @@ static bool load_save(tank_t *t, int64_t *saved_unix) {
         t->sd_snacks_paid = sv.sd_snacks_paid > 0 ? sv.sd_snacks_paid : 0;
         t->sh_snack_cool = sv.sh_snack_cool > 0 && sv.sh_snack_cool <= SH_SNACK_COOL_S ? sv.sh_snack_cool : 0;
     } else { t->sh_x = -1; t->sh_s = 0; t->sh_hitches = 0; t->sh_trust_passed = 0; t->sh_eaten = 0; t->sh_snack_pay = 0; t->sd_snacks_paid = 0; t->sh_snack_cool = 0; }
+    if (t->sd_unlocks & SD_ITEM_GREYHOUND) {          /* back in the water (its first tick places it), its life with you */
+        t->gh_x = -1;
+        t->gh_s = sv.gh_s > 0 ? sv.gh_s : 0;
+        t->gh_pets = sv.gh_pets > 0 ? sv.gh_pets : 0;
+        t->gh_fetches = sv.gh_fetches > 0 ? sv.gh_fetches : 0;
+        t->gh_name = sv.gh_name <= GH_NAME_COUNT ? sv.gh_name : 0;
+    } else { t->gh_x = -1; t->gh_s = 0; t->gh_pets = 0; t->gh_fetches = 0; t->gh_name = 0; }
+    t->ball_x = -1; t->ball_state = BALL_FLOAT;
+    t->up_dog = sv.up_dog <= 3 ? sv.up_dog : 3; t->up_ball = sv.up_ball <= 2 ? sv.up_ball : 2;
+    t->fine_left = sv.fine_left > 0 ? sv.fine_left : 0; t->treats_left = sv.treats_left > 0 ? sv.treats_left : 0;
     s_sd_pending = 0;
     s_arrival_pending = sv.arrival_pending; s_spawn_in = -1;
     s_sale_need = sv.sale_meals_need > 0 ? sv.sale_meals_need : 0;
@@ -1253,6 +1363,10 @@ bool progression_save(tank_t *t) {
         sv.sh_s = t->sh_s > 0 ? t->sh_s : 0; sv.sh_hitches = t->sh_hitches; sv.sh_trust_passed = t->sh_trust_passed;
         sv.sh_eaten = t->sh_eaten; sv.sh_snack_pay = t->sh_snack_pay; sv.sd_snacks_paid = t->sd_snacks_paid; sv.sh_snack_cool = t->sh_snack_cool > 0 ? t->sh_snack_cool : 0;
     }
+    if (t->sd_unlocks & SD_ITEM_GREYHOUND) {
+        sv.gh_s = t->gh_s > 0 ? t->gh_s : 0; sv.gh_pets = t->gh_pets; sv.gh_fetches = t->gh_fetches; sv.gh_name = t->gh_name;
+    }
+    sv.mod_magic = MOD_MAGIC; sv.up_dog = t->up_dog; sv.up_ball = t->up_ball; sv.fine_left = t->fine_left; sv.treats_left = t->treats_left;
     sv.setup_pending = s_setup_pending;
     sv.newborn_p1 = (uint8_t)(s_newborn >= 0 && s_newborn < t->n_fish ? s_newborn + 1 : 0);
     sv.bubble_x = t->bubble_x;

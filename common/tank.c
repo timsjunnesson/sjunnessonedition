@@ -411,6 +411,11 @@ void tank_init(tank_t *t, uint32_t seed) {
     t->cr_to = -1; t->cr_timer = 0; t->cr_gait = 0; t->cr_climb = 0; t->cr_outing = 0; t->cr_since_climb = 0; t->cr_nibble = 0; t->cr_nibble_i = 0;
     t->cr_startle_cool = 0; t->cr_find = 0; t->cr_find_cool = 0; t->cr_found = 0; t->cr_found_paid = 0; t->cr_was_night = false; t->cr_stood = false; t->cr_lane_front = true; t->cr_next_dig = false;
     t->cr_claim = -1; t->cr_shoo = 0; t->cr_meals = 0; t->cr_full = 0; t->shrimp_fp = -1; t->shrimp_flee = 0; t->shrimp_avoid_x = 0; t->shrimp_avoid_s = 0;
+    t->gh_x = -1; t->gh_y = 0; t->gh_vx = t->gh_vy = 0; t->gh_tx = t->gh_ty = 0; t->gh_phase = 0;
+    t->gh_rest = 0; t->gh_zoom = 0; t->gh_zoom_in = GH_ZOOM_MIN_S; t->gh_facing = 1;
+    t->gh_s = 0; t->gh_pets = 0; t->gh_fetches = 0; t->gh_name = 0; t->gh_happy = 0; t->gh_sleep = false; t->gh_breath = 0;
+    t->ball_x = -1; t->ball_y = 0; t->ball_vx = t->ball_vy = 0; t->ball_spin = 0; t->ball_state = BALL_FLOAT; t->gh_play_in = 90;
+    t->gh_happy_len = GH_PET_S; t->gh_treat = 0; t->gh_loop = 0; t->up_dog = 0; t->up_ball = 0; t->fine_left = 0; t->treats_left = 0;
     t->sh_x = -1; t->sh_y = 0; t->sh_bed = t->sh_frond = -1; t->sh_mode = SH_DRIFT; t->sh_facing = 1;
     t->sh_akind = SH_ANCHOR_NONE; t->sh_aitem = -1; t->sh_ax = t->sh_ay = t->sh_ahw = t->sh_aref = 0; t->sh_front = false;
     t->sh_hitched = t->sh_credited = false; t->sh_tx = t->sh_ty = 0; t->sh_stay = 0; t->sh_look = 0; t->sh_vx = t->sh_vy = 0;
@@ -1710,6 +1715,205 @@ void tank_urchin_place(tank_t *t) {
     t->urchin_bed = t->urchin_frond = -1; t->urchin_chew = 0; t->urchin_appetite = 0;
     t->urchin_to = -1; t->urchin_rest = 20;
 }
+/* ---- the greyhound (SD_ITEM_GREYHOUND; tank.h has the numbers) ----
+ * A racing dog in an aquarium: it doggy-paddles from one spot of open water
+ * to the next, treads water a while, and every minute or two gets the
+ * zoomies - a sprint to the far side, the fish darting out of its way. A
+ * finger held on the glass brings it over, nose to the glass; a tap on it is
+ * a pat (a wag, hearts). Lights out, it lies down on the sand - at the
+ * castle's door if there is a castle - and sleeps till morning. With the
+ * ball (SD_ITEM_BALL) it fetches: a tap throws the ball, the dog sprints
+ * after it and brings it back to the middle of the glass, and now and then
+ * it fetches it unasked. Its days, pats, fetches and name are saved. */
+static const char *const GH_NAMES[GH_NAME_COUNT] = {
+    "BLIXTEN", "RAKETEN", "PILEN", "TURBO", "KOMETEN", "SIXTEN", "BOSSE", "LUDDE",
+    "STINA", "SMULAN", "VIRVELN", "SNABBEN", "DOLLY", "NALLE", "ZORRO", "FIGARO" };
+static float gh_top(void)    { return 70.0f; }
+static float gh_bottom(void) { return TANK_BOT - 70.0f; }
+static float gh_bed_y(void)  { return TANK_BOT - 30.0f; }          /* lying down: its tucked legs on the sand */
+#define GH_NOSE_DX 33.0f                                             /* the nose, from its centre (the renderer's sprite) */
+#define GH_NOSE_DY 11.0f
+static void gh_pick(tank_t *t, bool zoom) {
+    if (zoom) {                                                     /* the far side, any height */
+        float lo = tank_glass_x0(t->gh_y) + GH_HALF_W + 16, hi = tank_glass_x1(t->gh_y) - GH_HALF_W - 16;
+        t->gh_tx = t->gh_x < (lo + hi) * 0.5f ? hi : lo;
+        t->gh_ty = tank_randf(t, gh_top(), gh_bottom());
+        return;
+    }
+    rand_water(t, GH_HALF_W + 20, gh_top(), gh_bottom(), &t->gh_tx, &t->gh_ty);
+}
+void tank_greyhound_place(tank_t *t) {
+    t->gh_x = TANK_W * 0.5f; t->gh_y = (gh_top() + gh_bottom()) * 0.5f;
+    t->gh_vx = t->gh_vy = 0; t->gh_phase = 0; t->gh_rest = 1.5f; t->gh_zoom = 0;
+    t->gh_zoom_in = tank_randf(t, GH_ZOOM_MIN_S * 0.5f, GH_ZOOM_MIN_S); t->gh_facing = 1;
+    t->gh_happy = 0; t->gh_sleep = false; t->gh_play_in = tank_randf(t, 60, 150);
+    if (t->gh_name == 0) t->gh_name = (uint8_t)(1 + (int)tank_randf(t, 0, GH_NAME_COUNT - 0.01f));
+    gh_pick(t, false);
+}
+bool tank_greyhound_zooming(const tank_t *t) { return t->gh_zoom > 0 && !t->gh_sleep; }
+bool tank_greyhound_hit(const tank_t *t, float x, float y) {
+    if (!(t->sd_unlocks & SD_ITEM_GREYHOUND) || t->gh_x <= 0) return false;
+    float dx = (x - t->gh_x) * t->gh_facing, dy = y - t->gh_y;
+    if (dx > -30 && dx < 22 && dy > -12 && dy < 18) return true;    /* the body and the legs */
+    return dx >= 16 && dx < 38 && dy > -24 && dy < -2;               /* the head */
+}
+void tank_greyhound_pet(tank_t *t) {
+    if (!(t->sd_unlocks & SD_ITEM_GREYHOUND)) return;
+    t->gh_happy = t->gh_happy_len = GH_PET_S; t->gh_pets++;
+    if (t->treats_left > 0 && t->ball_state != BALL_CARRIED) {     /* DOG TREATS: one per pat while they last */
+        t->treats_left--; t->gh_treat = GH_TREAT_S; t->gh_happy = t->gh_happy_len = GH_TREAT_S + 1.5f; t->gh_sleep = false;
+    }
+    if (t->up_dog >= 3 && !t->gh_sleep && t->gh_treat <= 0) t->gh_loop = GH_LOOP_S;   /* the LOOP TRICK */
+}
+float tank_greyhound_days(const tank_t *t) { return t->gh_s / 86400.0f; }
+const char *tank_greyhound_name(const tank_t *t) {
+    return t->gh_name >= 1 && t->gh_name <= GH_NAME_COUNT ? GH_NAMES[t->gh_name - 1] : "GREYHOUND";
+}
+void tank_greyhound_rename(tank_t *t) { t->gh_name = (uint8_t)(t->gh_name % GH_NAME_COUNT + 1); }
+const char *tank_greyhound_doing(const tank_t *t) {
+    bool finger = t->hold_active && t->hold_time >= HOLD_ATTRACT_S;
+    if (t->gh_treat > 0) return "EATING A TREAT";
+    if (t->gh_happy > 0) return "WAGGING ITS TAIL";
+    if (t->gh_sleep) return "ASLEEP";
+    if (t->ball_state == BALL_CARRIED) return "BRINGING THE BALL";
+    if (t->ball_state == BALL_THROWN) return "AFTER THE BALL";
+    if (finger) return "AT YOUR FINGER";
+    if (t->night) return "GOING TO BED";
+    if (t->gh_zoom > 0) return "DOING ZOOMIES";
+    if (t->gh_rest > 0) return "TREADING WATER";
+    return "PADDLING ABOUT";
+}
+/* the ball: buoyant, it rises to the surface and bobs there */
+static float ball_rest_y(float x) { return tank_glass_top(x) + BALL_R + 5; }
+void tank_ball_place(tank_t *t) {
+    t->ball_x = TANK_W * 0.35f; t->ball_y = ball_rest_y(t->ball_x);
+    t->ball_vx = t->ball_vy = 0; t->ball_spin = 0; t->ball_state = BALL_FLOAT;
+}
+bool tank_ball_hit(const tank_t *t, float x, float y) {
+    if (!(t->sd_unlocks & SD_ITEM_BALL) || t->ball_x <= 0 || t->ball_state == BALL_CARRIED) return false;
+    return tank_dist(x, y, t->ball_x, t->ball_y) < BALL_R + 16;      /* a fingertip's slop */
+}
+void tank_ball_throw(tank_t *t, float x, float y) {
+    if (!(t->sd_unlocks & SD_ITEM_BALL) || t->ball_x <= 0 || t->ball_state == BALL_CARRIED) return;
+    float dx = t->ball_x - x;
+    float side = fabsf(dx) > 3 ? (dx > 0 ? 1.0f : -1.0f) : (tank_randf(t, 0, 1) < 0.5f ? -1.0f : 1.0f);
+    if (t->ball_x < TANK_W * 0.2f) side = 1; else if (t->ball_x > TANK_W * 0.8f) side = -1;   /* off the glass, into the tank */
+    t->ball_vx = side * tank_randf(t, 120, 180);
+    t->ball_vy = tank_randf(t, 70, 140);                             /* flung down into the water */
+    t->ball_state = (t->sd_unlocks & SD_ITEM_GREYHOUND) ? BALL_THROWN : BALL_FLOAT;
+}
+static void ball_tick(tank_t *t, float dt) {
+    if (!(t->sd_unlocks & SD_ITEM_BALL)) return;
+    if (t->ball_x <= 0) tank_ball_place(t);
+    if (t->ball_state == BALL_CARRIED) return;                      /* at the dog's nose: greyhound_tick moves it */
+    float rest = ball_rest_y(t->ball_x);
+    if (t->ball_y > rest + 0.5f) t->ball_vy -= 70.0f * dt;         /* it floats up */
+    float k = fminf(1, dt * 1.4f);
+    t->ball_vx -= t->ball_vx * k; t->ball_vy -= t->ball_vy * k;
+    t->ball_x += t->ball_vx * dt; t->ball_y += t->ball_vy * dt;
+    t->ball_spin += t->ball_vx * dt / BALL_R;
+    if (t->ball_y < rest) { t->ball_y = rest; if (t->ball_vy < 0) t->ball_vy = 0; }
+    if (t->ball_y > TANK_BOT - 30) { t->ball_y = TANK_BOT - 30; t->ball_vy = -fabsf(t->ball_vy) * 0.5f; }
+    float lo = tank_glass_x0(t->ball_y) + BALL_R + 2, hi = tank_glass_x1(t->ball_y) - BALL_R - 2;
+    if (lo < hi) {
+        if (t->ball_x < lo) { t->ball_x = lo; t->ball_vx = fabsf(t->ball_vx) * 0.6f; }
+        if (t->ball_x > hi) { t->ball_x = hi; t->ball_vx = -fabsf(t->ball_vx) * 0.6f; }
+    }
+}
+static void greyhound_tick(tank_t *t, float dt) {
+    ball_tick(t, dt);
+    if (!(t->sd_unlocks & SD_ITEM_GREYHOUND)) return;
+    if (t->gh_x <= 0) tank_greyhound_place(t);
+    if (t->gh_name == 0) t->gh_name = (uint8_t)(1 + (int)tank_randf(t, 0, GH_NAME_COUNT - 0.01f));
+    t->gh_s += dt;
+    if (t->gh_happy > 0) t->gh_happy -= dt;
+    if (t->gh_loop > 0) t->gh_loop -= dt;
+    if (t->gh_treat > 0 && (t->gh_treat -= dt) <= 0 && !t->night) {   /* the treat's gone: zoomies */
+        t->gh_zoom = GH_ZOOM_S; t->gh_rest = 0; t->gh_happy = 0; gh_pick(t, true);
+    }
+    bool ball = (t->sd_unlocks & SD_ITEM_BALL) && t->ball_x > 0;
+    if (!ball && t->ball_state != BALL_FLOAT) t->ball_state = BALL_FLOAT;
+    bool finger = t->hold_active && t->hold_time >= HOLD_ATTRACT_S;
+    float cruise = t->night ? GH_SWIM_PX_S * 0.5f : GH_SWIM_PX_S;   /* lights out: a lazy paddle */
+    float want = 0, top = gh_top() - 20;
+    bool asleep_ok = false;
+    if (ball && t->ball_state == BALL_FLOAT && !t->night && !finger && t->gh_happy <= 0 && (t->gh_play_in -= dt) <= 0) {
+        t->ball_state = BALL_THROWN;                                 /* it fetches the ball by itself */
+        t->gh_play_in = tank_randf(t, 60, 150);
+    }
+    if (ball && t->ball_state == BALL_THROWN) {                     /* after the ball: a sprint, nose first */
+        t->gh_sleep = false; t->gh_zoom = 0; t->gh_rest = 0; top = 22;
+        float side = t->ball_x >= t->gh_x ? 1.0f : -1.0f;
+        t->gh_tx = t->ball_x - side * GH_NOSE_DX; t->gh_ty = t->ball_y + GH_NOSE_DY;
+        want = GH_ZOOM_PX_S * 0.85f;
+        if (tank_dist(t->gh_x, t->gh_y, t->gh_tx, t->gh_ty) < 20) t->gh_facing = (int8_t)side;   /* arrived slow: turn to it (it can stop facing away) */
+        float nx = t->gh_x + t->gh_facing * GH_NOSE_DX, ny = t->gh_y - GH_NOSE_DY;
+        if (tank_dist(nx, ny, t->ball_x, t->ball_y) < BALL_R + 6) { t->ball_state = BALL_CARRIED; t->ball_vx = t->ball_vy = 0; }
+    } else if (ball && t->ball_state == BALL_CARRIED) {             /* bringing it back: to a finger, or the middle of the glass */
+        t->gh_sleep = false; t->gh_zoom = 0; t->gh_rest = 0; top = 22;
+        float hx = finger ? t->hold_x : TANK_W * 0.5f, hy = finger ? t->hold_y + 14 : TANK_BOT * 0.42f;
+        t->gh_tx = hx; t->gh_ty = hy;                                   /* (not offset by its facing: that flips as it turns, and it would chase its own tail) */
+        want = cruise * 1.6f;
+        if (tank_dist(t->gh_x, t->gh_y, t->gh_tx, t->gh_ty) < 12) {   /* dropped at your feet: it floats up, the dog wags */
+            t->ball_state = BALL_FLOAT; t->ball_vx = t->gh_facing * 25.0f; t->ball_vy = -20.0f;
+            t->gh_fetches++; t->gh_happy = 2.5f; t->gh_rest = 2.0f;
+        }
+    } else if (finger) {
+        t->gh_sleep = false; t->gh_zoom = 0; t->gh_rest = 0;
+        t->gh_tx = t->hold_x - (t->hold_x > t->gh_x ? 1 : -1) * (GH_HALF_W - 4);   /* its nose at the fingertip */
+        t->gh_ty = t->hold_y + 8;
+        want = cruise * 1.6f;
+    } else if (t->gh_happy > 0) {
+        t->gh_sleep = false;                                         /* a pat: it stops and wags (and wakes, a moment) */
+    } else if (t->night) {                                           /* bedtime: down to the sand, the castle's door if there is one */
+        t->gh_zoom = 0; asleep_ok = true;
+        float bx = (t->sd_unlocks & SD_ITEM_CASTLE) ? tank_decor_x(t, 2) : t->gh_x;
+        t->gh_tx = bx; t->gh_ty = gh_bed_y();
+        if (!t->gh_sleep) want = cruise;
+    } else {
+        if (t->gh_sleep || t->gh_ty > gh_bottom() + 1) { t->gh_rest = 0; gh_pick(t, false); }   /* morning: up off the sand, straight away */
+        t->gh_sleep = false;
+        if (t->gh_zoom > 0) {
+            t->gh_zoom -= dt;
+            if (t->gh_zoom <= 0) { t->gh_rest = tank_randf(t, 2, 5); gh_pick(t, false); }
+        } else if ((t->gh_zoom_in -= dt) <= 0) {
+            t->gh_zoom = GH_ZOOM_S; t->gh_zoom_in = tank_randf(t, GH_ZOOM_MIN_S, GH_ZOOM_MAX_S);
+            t->gh_rest = 0; gh_pick(t, true);
+        }
+        float d = tank_dist(t->gh_x, t->gh_y, t->gh_tx, t->gh_ty);
+        if (t->gh_rest > 0) t->gh_rest -= dt;                        /* treading water */
+        else if (d > 3) want = t->gh_zoom > 0 ? GH_ZOOM_PX_S : cruise;
+        else if (t->gh_zoom > 0) gh_pick(t, true);
+        else { t->gh_rest = tank_randf(t, 1.5f, 6); gh_pick(t, false); }
+    }
+    float dx = t->gh_tx - t->gh_x, dy = t->gh_ty - t->gh_y, d = sqrtf(dx * dx + dy * dy);
+    if (asleep_ok && !t->gh_sleep && d < 6) { t->gh_sleep = true; t->gh_vx = t->gh_vy = 0; }
+    if (t->gh_sleep) { want = 0; t->gh_vx = t->gh_vy = 0; t->gh_breath += dt * 1.4f; if (t->gh_breath > 1000) t->gh_breath -= 1000 * TAU; }
+    if (want > 0 && d > 0) {
+        float slow = d < 40 ? 0.35f + 0.65f * d / 40 : 1;            /* it eases in at the end of a lap */
+        float tvx = dx / d * want * slow, tvy = dy / d * want * slow * (asleep_ok ? 1.0f : 0.7f);
+        float k = fminf(1, dt * (want > GH_SWIM_PX_S * 2 ? 3.0f : 1.6f));
+        t->gh_vx += (tvx - t->gh_vx) * k; t->gh_vy += (tvy - t->gh_vy) * k;
+    } else {
+        float k = fminf(1, dt * (t->gh_happy > 0 ? 3.0f : 1.2f));   /* drag: it drifts to a stop */
+        t->gh_vx -= t->gh_vx * k; t->gh_vy -= t->gh_vy * k;
+    }
+    t->gh_x += t->gh_vx * dt; t->gh_y += t->gh_vy * dt;
+    t->gh_y = clampf(t->gh_y, top, gh_bed_y());
+    float lo = tank_glass_x0(t->gh_y) + GH_HALF_W, hi = tank_glass_x1(t->gh_y) - GH_HALF_W;
+    if (lo < hi) t->gh_x = clampf(t->gh_x, lo, hi);
+    if (!t->gh_sleep) {
+        if (ball && t->ball_state == BALL_THROWN && tank_dist(t->gh_x, t->gh_y, t->gh_tx, t->gh_ty) < 20) t->gh_facing = t->ball_x >= t->gh_x ? 1 : -1;
+        else if (t->gh_vx > 4) t->gh_facing = 1; else if (t->gh_vx < -4) t->gh_facing = -1;
+        else if (finger && fabsf(t->hold_x - t->gh_x) > 6) t->gh_facing = t->hold_x > t->gh_x ? 1 : -1;
+        float sp = sqrtf(t->gh_vx * t->gh_vx + t->gh_vy * t->gh_vy);
+        t->gh_phase += dt * (3.2f + sp * 0.11f + (t->gh_happy > 0 ? 5.0f : 0));                     /* it paddles even treading water; faster at a sprint */
+        if (t->gh_phase > 1000.0f * TAU) t->gh_phase -= 1000.0f * TAU;
+    }
+    if (ball && t->ball_state == BALL_CARRIED) {                    /* in its mouth */
+        t->ball_x = t->gh_x + t->gh_facing * (GH_NOSE_DX - 1); t->ball_y = t->gh_y - GH_NOSE_DY + 4;
+    }
+}
 /* ---- the seahorse (0.3.6, SD_ITEM_SEAHORSE; tank.h has the story) ----
  * Three things it does. PERCH: its tail round an ANCHOR (tank.h: a blade, a
  * post on a decoration, or the sand) for a while, then it lets go and DRIFTs
@@ -2525,6 +2729,7 @@ void tank_feed(tank_t *t, float x, int n) {
     for (int i = 0; i < MAX_FOOD && n > 0; i++) {
         if (t->food[i].alive) continue;
         t->food[i].alive = true; t->food[i].from_player = true;
+        t->food[i].gold = false; if (t->fine_left > 0) { t->food[i].gold = true; t->fine_left--; }   /* FINE FOOD: golden while the pack lasts */
         t->food[i].x = clampf(x + tank_randf(t, -14, 14), TANK_FX0 + 20, TANK_FX1 - 20);
         t->food[i].y = tank_glass_top(t->food[i].x) + tank_randf(t, 6, 18);
         t->food[i].age = 0; t->food[i].floor_s = 0; t->food[i].nibbled = 0;
@@ -2707,7 +2912,7 @@ void tank_light_choice_set(tank_t *t, int choice) {
 void tank_scatter_food(tank_t *t, int n) {
     for (int i = 0; i < MAX_FOOD && n > 0; i++) {
         if (t->food[i].alive) continue;
-        t->food[i].alive = true; t->food[i].from_player = false;
+        t->food[i].alive = true; t->food[i].from_player = false; t->food[i].gold = false;
         t->food[i].x = tank_randf(t, TANK_FX0 + 25, TANK_FX1 - 25);
         t->food[i].y = tank_glass_top(t->food[i].x) + tank_randf(t, 6, 20);
         t->food[i].age = 0; t->food[i].floor_s = 0; t->food[i].nibbled = 0;
@@ -2738,6 +2943,7 @@ void tank_tick_sleep(tank_t *t, float seconds) {
     coral_grow(t, seconds);
     cluster_grow(t, seconds);
     shrimp_sleep(t, seconds);
+    if (t->sd_unlocks & SD_ITEM_GREYHOUND) t->gh_s += seconds;   /* the greyhound's days run through the night too */
     if (t->sd_unlocks & SD_ITEM_SEAHORSE) { t->sh_s += seconds; t->sh_snack_cool = fmaxf(0, t->sh_snack_cool - seconds); }   /* days with the keeper run through the night */
     if (t->sd_unlocks & SD_ITEM_CRAB) t->cr_full = fmaxf(0, t->cr_full - seconds);   /* hungry again by the morning */
     if (t->sd_unlocks & SD_ITEM_CRAB) {                 /* the crab's next find: its wait runs asleep too; one held up when the tank slept is due again at the wake */
@@ -2929,6 +3135,12 @@ static void eat_nearby_food(tank_t *t, fish_t *f) {
             f->curiosity = clampf(f->curiosity + 0.5f, 0, 10);   /* was 0.8: a trickle burst
                                                                      re-synced the school's curiosity */
             f->eaten++;
+            if (t->food[i].gold) {                                  /* FINE FOOD: more trust, and it sparkles a while */
+                f->trust = clampf(f->trust + FINE_TRUST, 0, 10);
+                f->hunger = clampf(f->hunger - 1.0f, 0, 10);
+                f->shine = FINE_SHINE_S;
+                t->food[i].gold = false;
+            }
             tank_emit(TEV_EAT, (int)(f - t->fish));
             if (t->food[i].from_player) {
                 f->eaten_player++; f->ms_bits |= MS_FIRST_MEAL_FROM_YOU; f->meal_due = true;
@@ -3162,6 +3374,19 @@ static void update_fish(tank_t *t, int idx, float dt) {
         /* the tell: an episode of the courtship circle, the arrival close */
         court_steer(t, f, idx, &desired, &touch_speed);
     }
+    /* the greyhound's zoomies: a fish in its path darts aside (no fright -
+     * no stress, no trust lost - it is a game) and comes back once it passes */
+    bool dodging = false;
+    if (tank_greyhound_zooming(t) && f->goal.id != GOAL_FLEE_SHADOW) {
+        float d = tank_dist(f->x, f->y, t->gh_x, t->gh_y);
+        if (d < GH_DODGE_R) {
+            float away = atan2f(f->y - t->gh_y, f->x - t->gh_x);
+            if (fabsf(t->gh_vx) > 20) away = atan2f(f->y >= t->gh_y ? 1.0f : -1.0f, (f->x - t->gh_x) * 0.25f);   /* up or down out of its lane */
+            desired = norm_ang(desired + norm_ang(away - desired) * 0.9f);
+            touch_speed = fmaxf(touch_speed, 75);
+            dodging = true;
+        }
+    }
 
     /* separation - personal space. Fish are ~40 px long; the old 16 px
      * radius let four content fish stack on one landmark like a pile of
@@ -3195,7 +3420,7 @@ static void update_fish(tank_t *t, int idx, float dt) {
     const float BEHIND_BAND  = 0.15f;    /* |cos| past vertical before the way is "behind" */
     const float TURN_SETTLE  = 1.3f;     /* s after a turn before the next can begin */
     if (!f->facing) f->facing = cosf(f->heading) < 0 ? -1 : 1;
-    bool urgent = agile || (t->ravenous && f->hunger > 6.5f) || (t->startled && touch_speed >= 55);
+    bool urgent = agile || dodging || (t->ravenous && f->hunger > 6.5f) || (t->startled && touch_speed >= 55);
     bool behind = cosf(desired) * f->facing < -BEHIND_BAND;
     if (behind) f->behind += dt;
     else f->behind = f->behind > 0 ? 0 : fminf(0, f->behind + dt);
@@ -3370,6 +3595,8 @@ void tank_tick(tank_t *t, float dt, advisor_fn advise) {
     urchin_tick(t, dt);
     crab_tick(t, dt);
     seahorse_tick(t, dt);
+    greyhound_tick(t, dt);
+    for (int i = 0; i < t->n_fish; i++) if (t->fish[i].shine > 0) t->fish[i].shine -= dt;   /* FINE FOOD's sparkle wears off */
     shrimp_tick(t, dt);
 
     /* bubbles rise */

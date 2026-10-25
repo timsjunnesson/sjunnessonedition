@@ -216,6 +216,21 @@ const char *const *progression_fry_tip(int kind);
 #define SD_PRICE_PUMPKIN 75       /* 0.3.6, Strato 2026-10-17: the seasonal lantern, "affordable" */
 #define SD_PRICE_VOLCANO 190      /* 0.3.9: Strato 2026-10-24 (it was the castle's 150 until he named one) */
 #define SD_PRICE_CRAB 140         /* 0.3.9: the strawberry crab - Strato 2026-10-24 */
+#define SD_PRICE_GREYHOUND 500    /* the dearest thing in the shop: a dog, in an aquarium */
+#define SD_PRICE_BALL      60     /* its toy */
+/* the shop's extras (after the items): steps for what is already in the
+ * tank, and packs that get used up. progression_extra_* describe the NEXT
+ * step (or the pack); offered = shown in the shop (a step needs its item). */
+enum { SD_EX_DOG = 0, SD_EX_BALL = 1, SD_EX_FINE = 2, SD_EX_TREATS = 3, SD_EX_COUNT = 4 };
+#define SD_FINE_PACK   12
+#define SD_TREAT_PACK  5
+typedef struct { const char *name, *words, *words2; int price; } sd_step_t;
+bool  progression_extra_offered(const tank_t *t, int k);
+bool  progression_extra_is_pack(int k);
+int   progression_extra_level(const tank_t *t, int k);     /* steps bought (packs: how many left) */
+int   progression_extra_steps(int k);                      /* steps in all (packs: 0) */
+const sd_step_t *progression_extra_next(const tank_t *t, int k);   /* NULL = all steps done */
+bool  progression_buy_extra(tank_t *t, int k);
 typedef struct {
     uint32_t    bit;               /* SD_ITEM_* */
     const char *name;              /* <= 15 chars: the row draws it at scale 2 from x 76, 178 px, short of the button at 300;

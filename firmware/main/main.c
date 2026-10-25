@@ -694,7 +694,13 @@ static void tank_task(void *arg) {
           else if (w == SET_TAP_ROTATE) ESP_LOGI(TAG, "settings: rotation %s", v ? (tank.orient_inv ? "LOCKED (turned over)" : "LOCKED (upright)") : "unlocked (the picture follows the tank)"); }
         if (touch_port_take_update() == UPD_TAP_CHECK) request_update();   /* the updates page's CHECK: save, restart into update mode */
         { int r = touch_port_take_shop();                               /* the shop's UNLOCK / MOVE / SELL / SHELVE / PUT BACK */
-          if (r >= SHOP_TAP_PLACE) {                                    /* back from the shelf (0.3.9): the placement page, its old spot in place */
+          if (r >= SHOP_TAP_EXTRA) {                                    /* a step or a pack (the greyhound mod) */
+              int k = r - SHOP_TAP_EXTRA; const sd_step_t *st = progression_extra_next(&tank, k);
+              const char *nm = st ? st->name : "?";
+              if (progression_buy_extra(&tank, k)) { audio_port_play(SND_CONFIRM, AUDIO_PITCH_ONE);
+                  ESP_LOGI(TAG, "shop: %s bought, %d sand dollars left", nm, (int)tank.sd_balance); }
+              else ESP_LOGI(TAG, "shop: %s refused (balance %d)", nm, (int)tank.sd_balance);
+          } else if (r >= SHOP_TAP_PLACE) {                                    /* back from the shelf (0.3.9): the placement page, its old spot in place */
               int item = r - SHOP_TAP_PLACE;
               if (progression_unshelve(&tank, item)) { audio_port_play(SND_CONFIRM, AUDIO_PITCH_ONE); touch_port_show_shop(false); setup_begin_place(&tank, item);
                   ESP_LOGI(TAG, "shop: %s back from the shelf - placement page up", SD_ITEMS[item].name); }

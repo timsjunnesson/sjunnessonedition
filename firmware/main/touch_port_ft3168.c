@@ -590,7 +590,7 @@ void touch_port_poll(tank_t *t) {
             if (s_set || s_upd || s_back) { s_back = false; goto released; }   /* the settings / updates page had the glass (their touch calls above) */
             if (s_shop) {                                           /* the shop: a row's modal, UNLOCK, HOW TO EARN, CLOSE */
                 int r = render_shop_tap(t, s_px, s_py);
-                ESP_LOGI(TAG, "shop tap at %.0f,%.0f -> %s", s_px, s_py, r == SHOP_TAP_CLOSE ? "CLOSE" : r >= SHOP_TAP_PLACE ? "PUT BACK" : r >= SHOP_TAP_SHELVE ? "SHELVE" : r >= SHOP_TAP_FRY ? "BUY A FRY" : r >= SHOP_TAP_SELL ? "SELL" : r >= SHOP_TAP_MOVE ? "MOVE" : r >= SHOP_TAP_BUY ? "UNLOCK" : r == SHOP_TAP_KEPT ? "modal" : "nothing");
+                ESP_LOGI(TAG, "shop tap at %.0f,%.0f -> %s", s_px, s_py, r == SHOP_TAP_CLOSE ? "CLOSE" : r >= SHOP_TAP_EXTRA ? "BUY A STEP OR PACK" : r >= SHOP_TAP_PLACE ? "PUT BACK" : r >= SHOP_TAP_SHELVE ? "SHELVE" : r >= SHOP_TAP_FRY ? "BUY A FRY" : r >= SHOP_TAP_SELL ? "SELL" : r >= SHOP_TAP_MOVE ? "MOVE" : r >= SHOP_TAP_BUY ? "UNLOCK" : r == SHOP_TAP_KEPT ? "modal" : "nothing");
                 if (r == SHOP_TAP_CLOSE) { s_shop = false; render_shop_leave(); s_ms = true; }   /* back to the milestones page (2026-09-16) */
                 else if (r >= SHOP_TAP_BUY) s_shop_act = r;   /* main.c buys (and plays the cue) or opens the placement page */
                 goto released;
@@ -653,7 +653,23 @@ void touch_port_poll(tank_t *t) {
                 ESP_LOGI(TAG, "next fish tap at %.0f,%.0f -> card %d (%s)", s_px, s_py, s_sel, t->fish[s_sel].name);
                 goto released;
             }
-            if (s_sel >= 0 && s_sel != RENDER_CARD_SNAIL && s_sel != RENDER_CARD_SHRIMP && s_sel != RENDER_CARD_URCHIN && s_sel != RENDER_CARD_SEAHORSE && s_sel != RENDER_CARD_CRAB && RENDER_CARD_HIT(s_px, s_py)) {   /* a tap ON the card (or the slop
+            if (s_sel == RENDER_CARD_GREYHOUND && render_greyhound_name_hit(s_px, s_py)) {   /* the greyhound's NEW NAME */
+                tank_greyhound_rename(t); progression_settings_changed(); s_sel_us = now;
+                ESP_LOGI(TAG, "greyhound renamed %s", tank_greyhound_name(t));
+                goto released;
+            }
+            if (s_sel == RENDER_CARD_GREYHOUND && render_greyhound_card_hit(s_px, s_py)) { s_sel_us = now; goto released; }   /* on its card: it stays up */
+            if (tank_ball_hit(t, s_px, s_py)) {   /* the ball: thrown, the greyhound fetches */
+                tank_ball_throw(t, s_px, s_py);
+                ESP_LOGI(TAG, "ball thrown at %.0f,%.0f", s_px, s_py);
+                goto released;
+            }
+            if (tank_greyhound_hit(t, s_px, s_py)) {   /* the greyhound: a pat, its card */
+                tank_greyhound_pet(t); s_sel = RENDER_CARD_GREYHOUND; s_sel_us = now;
+                ESP_LOGI(TAG, "greyhound patted (%d)", (int)t->gh_pets);
+                goto released;
+            }
+            if (s_sel >= 0 && s_sel != RENDER_CARD_SNAIL && s_sel != RENDER_CARD_SHRIMP && s_sel != RENDER_CARD_URCHIN && s_sel != RENDER_CARD_SEAHORSE && s_sel != RENDER_CARD_CRAB && s_sel != RENDER_CARD_GREYHOUND && RENDER_CARD_HIT(s_px, s_py)) {   /* a tap ON the card (or the slop
                 ESP_LOGI(TAG, "card tap at %.0f,%.0f -> milestones", s_px, s_py);         under its MORE button) = milestones page */
                 s_ms = true; goto released;
             }
@@ -706,7 +722,7 @@ void touch_port_poll(tank_t *t) {
 released:
     if (!touched) s_held_page = false;
     s_down = touched;
-    if (s_sel >= t->n_fish && s_sel != RENDER_CARD_SNAIL && s_sel != RENDER_CARD_SHRIMP && s_sel != RENDER_CARD_URCHIN && s_sel != RENDER_CARD_SEAHORSE && s_sel != RENDER_CARD_CRAB) s_sel = -1;   /* fresh tank / save load */
+    if (s_sel >= t->n_fish && s_sel != RENDER_CARD_SNAIL && s_sel != RENDER_CARD_SHRIMP && s_sel != RENDER_CARD_URCHIN && s_sel != RENDER_CARD_SEAHORSE && s_sel != RENDER_CARD_CRAB && s_sel != RENDER_CARD_GREYHOUND) s_sel = -1;   /* fresh tank / save load */
     if (s_sel >= 0 && now - s_sel_us > 10 * 1000000) s_sel = -1; /* auto-dismiss */
     if (s_bat && now - s_bat_us > BATTERY_PAGE_US) s_bat = false; /* the battery page too, after a while */
 }

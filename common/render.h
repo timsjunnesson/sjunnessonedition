@@ -113,6 +113,13 @@ void render_fb_primed(const uint16_t *fb, unsigned epoch);
  * it and a centred card: the crab facing the glass at 2x, the pellets it has
  * found and what it is doing. */
 #define RENDER_CARD_CRAB 95
+/* fish_idx == RENDER_CARD_GREYHOUND (the greyhound mod): its card - the dog,
+ * its name, days, pats, fetches, what it is doing and NEW NAME; the card's
+ * size is the seahorse's. render_greyhound_name_hit is NEW NAME's tap test,
+ * render_greyhound_card_hit the card's (a tap on it keeps it up). */
+#define RENDER_CARD_GREYHOUND 94
+bool render_greyhound_name_hit(float x, float y);
+bool render_greyhound_card_hit(float x, float y);
 void render_stats_card(const tank_t *t, int fish_idx, uint16_t *fb, int stride);
 /* Optional card cache (RENDER_CARD_W x RENDER_CARD_H uint16): with the scene
  * cache live, the card is redrawn at most 4x/s and blitted otherwise (~7 ms
@@ -298,7 +305,8 @@ void render_milestones_leave(void);
  * SHOP_TAP_KEPT when a modal opened or closed. Page state is render-local;
  * render_shop_leave clears it when the page closes. */
 enum { SHOP_TAP_NONE = 0, SHOP_TAP_KEPT = 1, SHOP_TAP_CLOSE = 2, SHOP_TAP_BUY = 16, SHOP_TAP_MOVE = 32, SHOP_TAP_SELL = 64,
-       SHOP_TAP_FRY = 128, SHOP_TAP_SHELVE = 256, SHOP_TAP_PLACE = 512 };   /* BUY / MOVE / SELL / SHELVE / PLACE + item index; FRY + the fry's place in the offer (0.3.5) */
+       SHOP_TAP_FRY = 128, SHOP_TAP_SHELVE = 256, SHOP_TAP_PLACE = 512,
+       SHOP_TAP_EXTRA = 1024 };   /* EXTRA + an SD_EX_*: a step or a pack bought (the greyhound mod) */   /* BUY / MOVE / SELL / SHELVE / PLACE + item index; FRY + the fry's place in the offer (0.3.5) */
 /* SHOP_TAP_SHELVE / SHOP_TAP_PLACE (0.3.9, the decoration shelf): a piece in
  * the tank has MOVE | SHELVE in its modal (SELL moved to the placement page);
  * SHELVE puts it away (progression_shelve) and the shop stays up - its row

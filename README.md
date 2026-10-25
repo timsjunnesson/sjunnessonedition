@@ -584,7 +584,8 @@ battery for its page), **Q** quit.
 Flags: `--fresh` starts a new random tank, `--fast N` runs tended time N×
 faster so you can watch fish grow up, `--greedy` disables sampling,
 `--narrate` prints every decision as it's made, `--battery N` starts the
-pretend battery at N%, `--snapshot <prefix>` writes
+pretend battery at N%, `--greyhound <prefix>` writes PPM frames of the
+greyhound paddling, its shop row and its card, `--snapshot <prefix>` writes
 PPM frames of the tank, card, milestones page, the shop, the placement
 page, the castle (in front, behind, its page), the battery in each state
 and its page, reset prompt, the setup pages, and the three pages of a birth.

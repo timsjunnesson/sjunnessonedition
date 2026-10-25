@@ -1149,8 +1149,8 @@ static int selftest_sleep(void) {
  * tail reading as the defaults - and again after a save and a reload. */
 #ifndef _MSC_VER
 #include <dirent.h>
-static const size_t SAVE_CUTS[] = { 448, 1112, 1304, 1408, 1432, 1440, 1456, 1480, 1608, 1616, 1624, 1640, 1656, 1664, 1672, 1680, 1688, 1880, 1896, 1904, 1912, 1920, 1928, 1936, 1944 };
-#define SAVE_NOW 1944                    /* today's sizeof(save_t): the crab's saved wait, 0.3.9.1 (1940 of fields, padded to 8; the crab at 1924, the LOCK at 1920, the volcano's tail at 1912, the shelf at 1908) */
+static const size_t SAVE_CUTS[] = { 448, 1112, 1304, 1408, 1432, 1440, 1456, 1480, 1608, 1616, 1624, 1640, 1656, 1664, 1672, 1680, 1688, 1880, 1896, 1904, 1912, 1920, 1928, 1936, 1944, 2336 };
+#define SAVE_NOW 2336                    /* today's sizeof(save_t): 0.3.9.1's 1940 of fields, the greyhound mod's gap, its 28-byte tail at 2304 (padded to 8) */
 static uint32_t sv_u32(const uint8_t *e, size_t off) { uint32_t v; memcpy(&v, e + off, 4); return v; }
 static float    sv_f32(const uint8_t *e, size_t off) { float v; memcpy(&v, e + off, 4); return v; }
 static int name_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
@@ -5129,7 +5129,7 @@ static int selftest_shop(void) {
            walls; BEHIND the fish and the grass pass in front of it; the spot and
            the depth survive a save */
         {
-            if (SD_ITEM_COUNT != 11 || SD_ITEMS[2].bit != SD_ITEM_CASTLE || SD_ITEMS[2].price != SD_PRICE_CASTLE) { printf("FAIL: the castle is not the third item\n"); return 1; }
+            if (SD_ITEM_COUNT != 13 || SD_ITEMS[2].bit != SD_ITEM_CASTLE || SD_ITEMS[2].price != SD_PRICE_CASTLE) { printf("FAIL: the castle is not the third item\n"); return 1; }
             if (!tank_decor_placeable(2) || tank_decor_z_count(2) != 2 || tank_decor_z_at(2, 0) != DECOR_Z_BACK || tank_decor_z_at(2, 1) != DECOR_Z_FRONT
                 || tank_decor_z_index(2, DECOR_Z_FRONT) != 1 || tank_decor_z_index(2, DECOR_Z_BACK) != 0) { printf("FAIL: the castle's depths\n"); return 1; }
             tank.sd_balance = SD_PRICE_CASTLE - 1;
@@ -6239,6 +6239,255 @@ static int selftest_shop(void) {
         if (tank.sd_balance != back) { printf("FAIL: back pay paid twice (%d)\n", tank.sd_balance); return 1; }
         printf("selftest-shop: a 1480-byte (pre-shop) save loads with 0 dollars, then back-pays %d once (%d fish); the toast took it\n", back, tank.n_fish);
     }
+    /* the greyhound: the twelfth item at 500, a resident (no sell-back); it
+       paddles about, gets the zoomies, comes to a finger held on the glass,
+       is drawn, and its purchase survives a save */
+    {
+        static uint16_t gfa[TANK_W * TANK_H], gfb[TANK_W * TANK_H];
+        if (SD_ITEMS[11].bit != SD_ITEM_GREYHOUND || SD_ITEMS[11].price != SD_PRICE_GREYHOUND || SD_PRICE_GREYHOUND != 500) { printf("FAIL: the greyhound is not the twelfth item at 500\n"); return 1; }
+        tank.sd_unlocks &= ~SD_ITEM_GREYHOUND; tank.sd_balance = 499;
+        if (progression_buy(&tank, 11)) { printf("FAIL: the greyhound sold for 499\n"); return 1; }
+        tank.sd_balance = 520;
+        if (!progression_buy(&tank, 11) || tank.sd_balance != 20 || !(tank.sd_unlocks & SD_ITEM_GREYHOUND)) { printf("FAIL: the greyhound's sale (balance %d)\n", tank.sd_balance); return 1; }
+        if (progression_buy(&tank, 11) || tank.sd_balance != 20) { printf("FAIL: the greyhound sold twice\n"); return 1; }
+        if (progression_sell(&tank, 11)) { printf("FAIL: the greyhound sold back (it is a resident)\n"); return 1; }
+        if (tank.gh_x <= 0) { printf("FAIL: the greyhound is not in the water after the sale\n"); return 1; }
+        tank.night = false; tank.hold_active = false;
+        float travel = 0, px0 = tank.gh_x, py0 = tank.gh_y, top_speed = 0; bool zoomed = false, left = false, right = false;
+        for (int i = 0; i < 60 * 150; i++) {
+            tank.night = false;
+            tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+            float d = tank_dist(px0, py0, tank.gh_x, tank.gh_y); travel += d; if (d * 60 > top_speed) top_speed = d * 60;
+            px0 = tank.gh_x; py0 = tank.gh_y;
+            zoomed |= tank_greyhound_zooming(&tank); left |= tank.gh_facing < 0; right |= tank.gh_facing > 0;
+            if (tank.gh_x < GH_HALF_W - 0.5f || tank.gh_x > TANK_W - GH_HALF_W + 0.5f || tank.gh_y < 0 || tank.gh_y > TANK_BOT) {
+                printf("FAIL: the greyhound left the water (%.0f, %.0f)\n", tank.gh_x, tank.gh_y); return 1; }
+        }
+        if (travel < 400 || !zoomed || !left || !right || top_speed < GH_SWIM_PX_S * 1.5f) {
+            printf("FAIL: the greyhound swam %.0f px in 150 s (zoomies %d, faced left %d right %d, top %.0f px/s)\n", travel, zoomed, left, right, top_speed); return 1; }
+        /* a finger held on the glass brings it over */
+        tank.hold_active = true; tank.hold_time = 5; tank.hold_x = TANK_W * 0.3f; tank.hold_y = TANK_BOT * 0.45f;
+        for (int i = 0; i < 60 * 20; i++) { tank.hold_time += 1.0f / 60.0f; tank.hold_active = true; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+        float fd = tank_dist(tank.gh_x, tank.gh_y, tank.hold_x, tank.hold_y);
+        tank.hold_active = false; tank.hold_time = 0;
+        if (fd > GH_HALF_W + 16) { printf("FAIL: the greyhound did not come to the finger (%.0f px off)\n", fd); return 1; }
+        /* drawn: its box differs with and without it */
+        render_tank(&tank, gfa, TANK_W); render_tank(&tank, gfa, TANK_W);
+        tank.sd_unlocks &= ~SD_ITEM_GREYHOUND;
+        render_tank(&tank, gfb, TANK_W); render_tank(&tank, gfb, TANK_W);
+        tank.sd_unlocks |= SD_ITEM_GREYHOUND;
+        int changed = 0;
+        for (int y = (int)tank.gh_y - 18; y <= (int)tank.gh_y + 18; y++)
+            for (int x = (int)tank.gh_x - 34; x <= (int)tank.gh_x + 34; x++)
+                if (x >= 0 && x < TANK_W && y >= 0 && y < TANK_H && gfa[y * TANK_W + x] != gfb[y * TANK_W + x]) changed++;
+        if (changed < 600) { printf("FAIL: the greyhound is not drawn (%d px changed)\n", changed); return 1; }
+        progression_save(&tank);
+        { tank_init(&tank, 4343); progression_boot(&tank); tank.trickle_off = true;
+          if (!(tank.sd_unlocks & SD_ITEM_GREYHOUND)) { printf("FAIL: the greyhound did not survive the save\n"); return 1; }
+          tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+          if (tank.gh_x <= 0) { printf("FAIL: the greyhound is not back in the water after a load\n"); return 1; } }
+        printf("selftest-shop: greyhound: 500, a resident; swam %.0f px in 150 s (top %.0f px/s, zoomies), came to the finger (%.0f px), %d px drawn, kept by a save\n",
+               travel, top_speed, fd, changed);
+    }
+    /* the greyhound's life: a name from the start, a pat (hearts, the count,
+       its card), NEW NAME, bed at lights out (by the castle's door) and up
+       in the morning, the fish dodging its zoomies, and the ball (60): a tap
+       throws it, the dog fetches it back to the middle; all of it saved */
+    {
+        static uint16_t gfa[TANK_W * TANK_H], gfb[TANK_W * TANK_H];
+#define GH_RUN(sec, nightv) for (int i_ = 0; i_ < (int)((sec) * 60); i_++) { tank.light_override = true; tank.light_on = !(nightv); tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+        tank.hold_active = false; tank.hold_time = 0;
+        if (tank.gh_name < 1 || tank.gh_name > GH_NAME_COUNT) { printf("FAIL: the greyhound has no name (%d)\n", tank.gh_name); return 1; }
+        char was[16]; snprintf(was, sizeof was, "%s", tank_greyhound_name(&tank));
+        tank_greyhound_rename(&tank);
+        if (!strcmp(was, tank_greyhound_name(&tank))) { printf("FAIL: NEW NAME kept %s\n", was); return 1; }
+        GH_RUN(2, false);
+        int pets0 = tank.gh_pets;
+        if (!tank_greyhound_hit(&tank, tank.gh_x, tank.gh_y) || tank_greyhound_hit(&tank, tank.gh_x, tank.gh_y - 60)) { printf("FAIL: the greyhound's hit test\n"); return 1; }
+        tank_greyhound_pet(&tank);
+        if (tank.gh_pets != pets0 + 1 || tank.gh_happy <= 0 || strcmp(tank_greyhound_doing(&tank), "WAGGING ITS TAIL")) { printf("FAIL: a pat\n"); return 1; }
+        GH_RUN(1, false);
+        render_tank(&tank, gfa, TANK_W);
+        render_stats_card(&tank, RENDER_CARD_GREYHOUND, gfa, TANK_W);
+        render_tank(&tank, gfb, TANK_W);
+        int card_px = 0; for (int k = 0; k < TANK_W * TANK_H; k++) card_px += gfa[k] != gfb[k];
+        if (card_px < 20000) { printf("FAIL: the greyhound's card (%d px)\n", card_px); return 1; }
+        if (!render_greyhound_name_hit((TANK_W + SEAHORSE_CARD_W) / 2 - 60, (TANK_H + SEAHORSE_CARD_H) / 2 - 26)) { printf("FAIL: NEW NAME's hit test\n"); return 1; }
+        GH_RUN(GH_PET_S, false);
+        /* bedtime: with the castle, at its door */
+        tank.sd_unlocks |= SD_ITEM_CASTLE; tank_castle_place(&tank);
+        float t_bed = -1;
+        for (int i = 0; i < 60 * 60 && t_bed < 0; i++) { tank.light_override = true; tank.light_on = false; tank.hold_active = false; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); if (tank.gh_sleep) t_bed = i / 60.0f; }
+        if (t_bed < 0 || fabsf(tank.gh_x - tank_decor_x(&tank, 2)) > 8 && tank.gh_x > tank_glass_x0(tank.gh_y) + GH_HALF_W + 1 && tank.gh_x < tank_glass_x1(tank.gh_y) - GH_HALF_W - 1) {
+            printf("FAIL: the greyhound did not go to bed at the castle (asleep %d at %.0f,%.0f -> %.0f,%.0f v %.1f,%.1f, castle %.0f, happy %.1f)\n", tank.gh_sleep, tank.gh_x, tank.gh_y, tank.gh_tx, tank.gh_ty, tank.gh_vx, tank.gh_vy, tank_decor_x(&tank, 2), tank.gh_happy); return 1; }
+        float bx = tank.gh_x, by = tank.gh_y;
+        GH_RUN(30, true);
+        if (!tank.gh_sleep || fabsf(tank.gh_x - bx) > 0.5f || fabsf(tank.gh_y - by) > 0.5f || strcmp(tank_greyhound_doing(&tank), "ASLEEP")) { printf("FAIL: the greyhound did not stay asleep\n"); return 1; }
+        render_tank(&tank, gfa, TANK_W);
+        GH_RUN(0.05f, false);
+        if (tank.gh_sleep) { printf("FAIL: the greyhound slept through the morning\n"); return 1; }
+        GH_RUN(5, false);
+        if (tank.gh_y > by - 10) { printf("FAIL: the greyhound stayed on the sand in the morning (%.0f)\n", tank.gh_y); return 1; }
+        /* zoomies: a fish in its lane darts aside */
+        { int fi = 0; GH_RUN(1, false);
+          tank.gh_zoom = GH_ZOOM_S; tank.gh_rest = 0; tank.gh_x = TANK_W * 0.25f; tank.gh_y = TANK_BOT * 0.45f; tank.gh_vx = GH_ZOOM_PX_S; tank.gh_vy = 0;
+          tank.gh_tx = TANK_W * 0.85f; tank.gh_ty = tank.gh_y;
+          tank.fish[fi].x = tank.gh_x + 60; tank.fish[fi].y = tank.gh_y + 3;
+          float min_gap = 1e9f;
+          for (int i = 0; i < 90; i++) { tank.light_override = true; tank.light_on = true; tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+              min_gap = fminf(min_gap, fabsf(tank.fish[fi].y - tank.gh_y)); }
+          float dy_end = fabsf(tank.fish[fi].y - tank.gh_y);
+          if (dy_end < 14) { printf("FAIL: a fish in the zoomies' lane did not dodge (%.0f px off its line)\n", dy_end); return 1; }
+          printf("selftest-shop: greyhound: a fish in its lane darted %.0f px aside\n", dy_end); }
+        /* the ball */
+        if (SD_ITEMS[12].bit != SD_ITEM_BALL || SD_ITEMS[12].price != SD_PRICE_BALL) { printf("FAIL: the ball is not the thirteenth item\n"); return 1; }
+        tank.sd_balance = SD_PRICE_BALL;
+        if (!progression_buy(&tank, 12) || tank.sd_balance != 0 || tank.ball_x <= 0) { printf("FAIL: the ball's sale\n"); return 1; }
+        GH_RUN(4, false);
+        if (fabsf(tank.ball_y - (tank_glass_top(tank.ball_x) + BALL_R + 5)) > 2) { printf("FAIL: the ball does not float (y %.0f)\n", tank.ball_y); return 1; }
+        if (!tank_ball_hit(&tank, tank.ball_x + 5, tank.ball_y + 5)) { printf("FAIL: the ball's hit test\n"); return 1; }
+        int fetch0 = tank.gh_fetches;
+        tank_ball_throw(&tank, tank.ball_x - 5, tank.ball_y - 5);
+        if (tank.ball_state != BALL_THROWN) { printf("FAIL: a tap did not throw the ball\n"); return 1; }
+        float t_got = -1, t_back = -1;
+        for (int i = 0; i < 60 * 40 && t_back < 0; i++) {
+            tank.light_override = true; tank.light_on = true; tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+            if (t_got < 0 && tank.ball_state == BALL_CARRIED) t_got = i / 60.0f;
+            if (tank.gh_fetches > fetch0) t_back = i / 60.0f;
+        }
+        if (t_got < 0 || t_back < 0) { printf("FAIL: no fetch (caught %.1f s, back %.1f s; ball %.0f,%.0f state %d, dog %.0f,%.0f -> %.0f,%.0f sleep %d happy %.1f night %d, glass %.0f..%.0f top %.0f)\n", t_got, t_back, tank.ball_x, tank.ball_y, tank.ball_state, tank.gh_x, tank.gh_y, tank.gh_tx, tank.gh_ty, tank.gh_sleep, tank.gh_happy, tank.night, tank_glass_x0(tank.gh_y), tank_glass_x1(tank.gh_y), tank_glass_top(tank.ball_x)); return 1; }
+        if (fabsf(tank.ball_x - TANK_W * 0.5f) > 50) { printf("FAIL: the ball came back to %.0f, not the middle\n", tank.ball_x); return 1; }
+        /* it fetches unasked, by and by */
+        tank.gh_play_in = 0.1f; int fetch1 = tank.gh_fetches;
+        GH_RUN(40, false);
+        if (tank.gh_fetches <= fetch1) { printf("FAIL: the greyhound never played with the ball by itself (state %d play_in %.1f happy %.1f night %d ball %.0f,%.0f dog %.0f,%.0f)\n", tank.ball_state, tank.gh_play_in, tank.gh_happy, tank.night, tank.ball_x, tank.ball_y, tank.gh_x, tank.gh_y); return 1; }
+        /* kept by a save: the name, the pats, the fetches, the time, the ball */
+        char nm[16]; snprintf(nm, sizeof nm, "%s", tank_greyhound_name(&tank));
+        int pets = tank.gh_pets, fetches = tank.gh_fetches; float ghs = tank.gh_s;
+        progression_save(&tank);
+        tank_init(&tank, 4545); progression_boot(&tank); tank.trickle_off = true;
+        if (strcmp(nm, tank_greyhound_name(&tank)) || tank.gh_pets != pets || tank.gh_fetches != fetches || fabsf(tank.gh_s - ghs) > 1 || !(tank.sd_unlocks & SD_ITEM_BALL)) {
+            printf("FAIL: the save lost the greyhound's life (%s %d %d %.0f / %s %d %d %.0f)\n", nm, pets, fetches, ghs, tank_greyhound_name(&tank), (int)tank.gh_pets, (int)tank.gh_fetches, tank.gh_s); return 1; }
+        GH_RUN(0.1f, false);
+        if (tank.ball_x <= 0 || tank.gh_x <= 0) { printf("FAIL: the dog or the ball is not back after a load\n"); return 1; }
+        printf("selftest-shop: greyhound: named %s, a pat, its card (%d px), asleep by the castle in %.1f s and up at dawn, a fetch (caught %.1f s, back %.1f s), one unasked; kept by a save\n",
+               nm, card_px, t_bed, t_got, t_back);
+#undef GH_RUN
+        tank.light_override = false;
+    }
+    /* the shop's extras (the greyhound mod): steps for the greyhound (250,
+       700, 1500) and the ball (200, 600), packs of FINE FOOD (40: golden
+       pellets, more trust, a shine) and DOG TREATS (30: a pat gives one, then
+       zoomies); the LOOP TRICK; the shop's rows and UPGRADE; all saved */
+    {
+#define EX_RUN(sec) for (int i_ = 0; i_ < (int)((sec) * 60); i_++) { tank.light_override = true; tank.light_on = true; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+        if (!(tank.sd_unlocks & SD_ITEM_GREYHOUND) || !(tank.sd_unlocks & SD_ITEM_BALL)) { printf("FAIL: extras test wants the dog and the ball\n"); return 1; }
+        for (int k = 0; k < SD_EX_COUNT; k++) if (!progression_extra_offered(&tank, k)) { printf("FAIL: extra %d not offered\n", k); return 1; }
+        { tank_t bare; tank_init(&bare, 9); if (progression_extra_offered(&bare, SD_EX_DOG) || progression_extra_offered(&bare, SD_EX_BALL) || progression_extra_offered(&bare, SD_EX_TREATS) || !progression_extra_offered(&bare, SD_EX_FINE)) {
+            printf("FAIL: the extras' offers without the dog and the ball\n"); return 1; } }
+        static const int dogp[3] = { 250, 700, 1500 }, ballp[2] = { 200, 600 };
+        tank.up_dog = 0; tank.up_ball = 0;
+        for (int l = 0; l < 3; l++) {
+            tank.sd_balance = dogp[l] - 1;
+            if (progression_buy_extra(&tank, SD_EX_DOG)) { printf("FAIL: dog step %d sold for %d\n", l + 1, dogp[l] - 1); return 1; }
+            tank.sd_balance = dogp[l] + 5;
+            if (!progression_buy_extra(&tank, SD_EX_DOG) || tank.up_dog != l + 1 || tank.sd_balance != 5) { printf("FAIL: dog step %d\n", l + 1); return 1; }
+        }
+        tank.sd_balance = 99999;
+        if (progression_extra_next(&tank, SD_EX_DOG) || progression_buy_extra(&tank, SD_EX_DOG) || tank.up_dog != 3) { printf("FAIL: a fourth dog step\n"); return 1; }
+        for (int l = 0; l < 2; l++) {
+            tank.sd_balance = ballp[l];
+            if (!progression_buy_extra(&tank, SD_EX_BALL) || tank.up_ball != l + 1 || tank.sd_balance != 0) { printf("FAIL: ball step %d\n", l + 1); return 1; }
+        }
+        tank.sd_balance = 99999;
+        if (progression_buy_extra(&tank, SD_EX_BALL)) { printf("FAIL: a third ball step\n"); return 1; }
+        /* FINE FOOD */
+        tank.fine_left = 0; tank.sd_balance = 40;
+        if (!progression_buy_extra(&tank, SD_EX_FINE) || tank.fine_left != SD_FINE_PACK || tank.sd_balance != 0) { printf("FAIL: FINE FOOD's sale\n"); return 1; }
+        for (int i = 0; i < tank.n_fish; i++) { tank.fish[i].shine = 0; tank.fish[i].hunger = 8; }
+        float trust0 = 0; for (int i = 0; i < tank.n_fish; i++) trust0 += tank.fish[i].trust;
+        tank_feed(&tank, tank.fish[0].x, 3);
+        int golds = 0; for (int i = 0; i < MAX_FOOD; i++) golds += tank.food[i].alive && tank.food[i].gold;
+        if (golds != 3 || tank.fine_left != SD_FINE_PACK - 3) { printf("FAIL: FINE FOOD: %d golden pellets, %d left\n", golds, tank.fine_left); return 1; }
+        int shiny = 0;
+        for (int i = 0; i < 60 * 40 && !shiny; i++) { tank.light_override = true; tank.light_on = true; tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+            for (int j = 0; j < tank.n_fish; j++) shiny += tank.fish[j].shine > 0; }
+        if (!shiny) { printf("FAIL: no fish ate a golden pellet in 40 s\n"); return 1; }
+        /* DOG TREATS + the LOOP TRICK */
+        tank.treats_left = 0; tank.sd_balance = 30;
+        if (!progression_buy_extra(&tank, SD_EX_TREATS) || tank.treats_left != SD_TREAT_PACK) { printf("FAIL: DOG TREATS' sale\n"); return 1; }
+        tank.ball_state = BALL_FLOAT; tank.gh_sleep = false; EX_RUN(0.1f);
+        tank_greyhound_pet(&tank);
+        if (tank.treats_left != SD_TREAT_PACK - 1 || tank.gh_treat <= 0 || strcmp(tank_greyhound_doing(&tank), "EATING A TREAT")) { printf("FAIL: a pat did not give a treat\n"); return 1; }
+        EX_RUN(GH_TREAT_S + 0.2f);
+        if (!tank_greyhound_zooming(&tank)) { printf("FAIL: no zoomies after the treat\n"); return 1; }
+        EX_RUN(GH_ZOOM_S + 6);
+        int left = tank.treats_left; tank.treats_left = 0;
+        tank_greyhound_pet(&tank);
+        if (tank.gh_loop <= 0) { printf("FAIL: the LOOP TRICK did not loop\n"); return 1; }
+        tank.treats_left = left;
+        /* drawn: the steps change the dog and the ball, the gold pellets and the shine show */
+        { static uint16_t ea[TANK_W * TANK_H], eb[TANK_W * TANK_H];
+          EX_RUN(GH_LOOP_S + 0.5f);
+          tank.gh_happy = 0; tank.gh_treat = 0; tank.gh_loop = 0; tank.gh_sleep = false;
+          render_tank(&tank, ea, TANK_W); uint8_t ud = tank.up_dog, ub = tank.up_ball; tank.up_dog = 0; tank.up_ball = 0;
+          render_tank(&tank, eb, TANK_W); tank.up_dog = ud; tank.up_ball = ub;
+          int diff = 0; for (int k = 0; k < TANK_W * TANK_H; k++) diff += ea[k] != eb[k];
+          if (diff < 40) { printf("FAIL: the steps do not show (%d px)\n", diff); return 1; } }
+        /* the shop: the extras' rows, a modal, UPGRADE / BUY */
+        { int rows_before = 0; (void)rows_before;
+          tank.up_dog = 1; tank.sd_balance = 700;
+          render_shop_leave();
+          static uint16_t sb[TANK_W * TANK_H];
+          int got = SHOP_TAP_NONE;
+          for (int pg = 0; pg < 6 && got != SHOP_TAP_EXTRA + SD_EX_DOG; pg++) {
+              for (int r = 0; r < SHP_PER_PAGE && got != SHOP_TAP_EXTRA + SD_EX_DOG; r++) {
+                  render_tank(&tank, sb, TANK_W); render_shop(&tank, sb, TANK_W);
+                  int y = SHP_ROW_Y0 + r * SHP_ROW_DY + 10;
+                  if (render_shop_tap(&tank, PAGE_X + 100, PAGE_Y + y) != SHOP_TAP_KEPT) continue;
+                  render_shop(&tank, sb, TANK_W);
+                  int bx = SHP_MODAL_X + (SHP_MODAL_W - MSP_HOW_W) / 2 + MSP_HOW_W / 2, by = SHP_MODAL_Y + SHP_MODAL_H - 12 - MSP_HOW_H / 2;
+                  got = render_shop_tap(&tank, PAGE_X + bx, PAGE_Y + by);
+              }
+              render_shop_tap(&tank, PAGE_X + SHP_ARROW_X1 + 4, PAGE_Y + SHP_ARROW_Y + 4);
+          }
+          render_shop_leave();
+          if (got != SHOP_TAP_EXTRA + SD_EX_DOG) { printf("FAIL: the shop never offered the DIVE MASK's UPGRADE (%d)\n", got); return 1; }
+          if (!progression_buy_extra(&tank, SD_EX_DOG) || tank.up_dog != 2) { printf("FAIL: the DIVE MASK from the shop\n"); return 1; }
+          tank.up_dog = 3; }
+        /* kept by a save */
+        uint8_t ud = tank.up_dog, ub = tank.up_ball; int fl = tank.fine_left, tl = tank.treats_left;
+        progression_save(&tank);
+        tank_init(&tank, 4646); progression_boot(&tank); tank.trickle_off = true;
+        if (tank.up_dog != ud || tank.up_ball != ub || tank.fine_left != fl || tank.treats_left != tl) {
+            printf("FAIL: the save lost the extras (%d %d %d %d / %d %d %d %d)\n", ud, ub, fl, tl, tank.up_dog, tank.up_ball, tank.fine_left, tank.treats_left); return 1; }
+        /* the mod's first saves (built on 0.3.8.1: 1936 bytes, the dog at
+           1908..1931, the dog and the ball at sd_unlocks bits 9 and 10) move
+           over: the dog keeps its life, the volcano and the crab stay unbought */
+        { static uint8_t raw[4096]; size_t n = 0;
+          progression_save(&tank);
+          if (!persist_port_load(raw, sizeof raw, &n) || n != 2336) { printf("FAIL: the save is %zu bytes, want 2336\n", n); return 1; }
+          uint32_t rel = 0x00030801u, un; memcpy(raw + 1664, &rel, 4);
+          memcpy(&un, raw + 1488, 4); un &= ~(SD_ITEM_GREYHOUND | SD_ITEM_BALL | SD_ITEM_VOLCANO | SD_ITEM_CRAB); un |= (1u << 9) | (1u << 10); memcpy(raw + 1488, &un, 4);
+          float gs = 3 * 86400.0f + 100; int32_t gp = 42, gf = 17; int16_t fl = 7, tl = 3;
+          memset(raw + 1908, 0, 28);
+          memcpy(raw + 1908, &gs, 4); memcpy(raw + 1912, &gp, 4); memcpy(raw + 1916, &gf, 4); raw[1920] = 5;
+          raw[1924] = 2; raw[1925] = 1; memcpy(raw + 1928, &fl, 2); memcpy(raw + 1930, &tl, 2);
+          persist_port_save(raw, 1936);
+          tank_init(&tank, 4747); progression_boot(&tank); tank.trickle_off = true;
+          if (!(tank.sd_unlocks & SD_ITEM_GREYHOUND) || !(tank.sd_unlocks & SD_ITEM_BALL) || (tank.sd_unlocks & (SD_ITEM_VOLCANO | SD_ITEM_CRAB))
+              || (int)tank_greyhound_days(&tank) != 3 || tank.gh_pets != 42 || tank.gh_fetches != 17 || tank.gh_name != 5
+              || tank.up_dog != 2 || tank.up_ball != 1 || tank.fine_left != 7 || tank.treats_left != 3) {
+              printf("FAIL: an old mod save did not move over (unlocks %x, %d pets, name %d, steps %d/%d, packs %d/%d)\n", (unsigned)tank.sd_unlocks, (int)tank.gh_pets, tank.gh_name, tank.up_dog, tank.up_ball, tank.fine_left, tank.treats_left); return 1; }
+          progression_save(&tank);
+          if (!persist_port_load(raw, sizeof raw, &n) || n != 2336) { printf("FAIL: the moved save writes back at %zu\n", n); return 1; }
+          tank_init(&tank, 4848); progression_boot(&tank); tank.trickle_off = true;
+          if (tank.gh_pets != 42 || !(tank.sd_unlocks & SD_ITEM_GREYHOUND) || (tank.sd_unlocks & SD_ITEM_VOLCANO)) { printf("FAIL: the moved save did not load back\n"); return 1; }
+          printf("selftest-shop: an old mod save (0.3.8.1, 1936 B) moved over: %s, 3 days, 42 pats, steps 2/1, packs 7/3; no free volcano or crab\n", tank_greyhound_name(&tank)); }
+        printf("selftest-shop: extras: dog steps 250/700/1500, ball steps 200/600, FINE FOOD (3 golden, a fish shines), a treat then zoomies, the loop, UPGRADE in the shop; kept by a save\n");
+        tank.light_override = false;
+#undef EX_RUN
+    }
 #undef SHOP_TICK
 #undef SHOP_WANT
     (void)system(cmd);
@@ -6861,6 +7110,105 @@ shop:
     return 0;
 }
 
+/* --greyhound <prefix>: the greyhound paddling in a lived-in tank -
+ * <prefix>_00..07.ppm a frame every 0.25 s by day, _night.ppm, _shop.ppm
+ * (its row) and _modal.ppm (its card); prints its cost per frame on the host. */
+static int greyhound_shot(const char *prefix) {
+    tank_init(&tank, 2024);
+    tank_new_population(&tank);
+    tank_make_fish(&tank, 0, 0, 0.6f, 0.6f, STAGE_ADULT); tank_make_fish(&tank, 1, 3, 0.6f, 0.6f, STAGE_ADULT);
+    tank_make_fish(&tank, 2, 1, 0.6f, 0.6f, STAGE_ADULT); tank.n_fish = 3;
+    tank.sd_unlocks |= SD_ITEM_CASTLE | SD_ITEM_GREYHOUND;
+    tank_castle_place(&tank); tank_decor_set(&tank, 2, TANK_FLOOR_X(104), DECOR_Z_BACK);
+    tank_greyhound_place(&tank);
+    for (int i = 0; i < 12 * 60; i++) { tank.night = false; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+    memset(tank.algae, 0, sizeof tank.algae);
+    static uint16_t fb[TANK_W * TANK_H];
+    render_set_scene_cache(scene_buf); render_set_vignette_cache(vig_buf);
+    render_set_card_cache(card_buf); render_set_dirty_mask(dirty_buf);
+    char path[512];
+    double us[2];
+    for (int with = 0; with < 2; with++) {
+        tank_t keep = tank;
+        if (!with) tank.sd_unlocks &= ~SD_ITEM_GREYHOUND;
+        render_tank(&tank, fb, TANK_W);
+        double t0 = now_us();
+        for (int k = 0; k < 600; k++) { tank_tick(&tank, 1.0f / 60.0f, advisor_rules); render_tank(&tank, fb, TANK_W); }
+        us[with] = (now_us() - t0) / 600; tank = keep;
+    }
+    printf("greyhound: tick+frame us (host) without %.0f, with %.0f\n", us[0], us[1]);
+    for (int k = 0; k < 8; k++) {
+        for (int i = 0; i < 15; i++) { tank.night = false; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+        render_tank(&tank, fb, TANK_W);
+        snprintf(path, sizeof path, "%s_%02d.ppm", prefix, k); write_ppm(path, fb);
+    }
+    /* a pat: the wag and the hearts; its card */
+    tank_greyhound_pet(&tank);
+    for (int i = 0; i < 50; i++) { tank.light_override = true; tank.light_on = true; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+    render_tank(&tank, fb, TANK_W);
+    snprintf(path, sizeof path, "%s_pet.ppm", prefix); write_ppm(path, fb);
+    render_stats_card(&tank, RENDER_CARD_GREYHOUND, fb, TANK_W);
+    snprintf(path, sizeof path, "%s_card.ppm", prefix); write_ppm(path, fb);
+    for (int i = 0; i < 60 * 4; i++) { tank.light_override = true; tank.light_on = true; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+    /* the ball: thrown, caught, brought back */
+    tank.sd_unlocks |= SD_ITEM_BALL; tank_ball_place(&tank);
+    for (int i = 0; i < 60 * 3; i++) { tank.light_override = true; tank.light_on = true; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+    render_tank(&tank, fb, TANK_W);
+    snprintf(path, sizeof path, "%s_ball.ppm", prefix); write_ppm(path, fb);
+    tank_ball_throw(&tank, tank.ball_x - 5, tank.ball_y - 5);
+    for (int i = 0; i < 60 * 20 && tank.ball_state != BALL_CARRIED; i++) { tank.light_override = true; tank.light_on = true; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+    for (int i = 0; i < 40; i++) { tank.light_override = true; tank.light_on = true; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+    render_tank(&tank, fb, TANK_W);
+    snprintf(path, sizeof path, "%s_fetch.ppm", prefix); write_ppm(path, fb);
+    /* lights out: to bed by the castle */
+    for (int i = 0; i < 60 * 60 && !tank.gh_sleep; i++) { tank.light_override = true; tank.light_on = false; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+    for (int i = 0; i < 60 * 3; i++) { tank.light_override = true; tank.light_on = false; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+    render_tank(&tank, fb, TANK_W);
+    snprintf(path, sizeof path, "%s_night.ppm", prefix); write_ppm(path, fb);
+    tank.light_override = true; tank.light_on = true;
+    for (int i = 0; i < 2; i++) tank_tick(&tank, 1.0f / 60.0f, advisor_rules);
+    tank.light_override = false;
+    /* the shop's extras: the dog's steps (gold collar, dive mask), the duck,
+       the frisbee, a treat, golden pellets and a fish's shine */
+#define SH_RUN(sec) for (int i_ = 0; i_ < (int)((sec) * 60); i_++) { tank.light_override = true; tank.light_on = true; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+    tank.up_dog = 2; tank.up_ball = 1; SH_RUN(5);
+    render_tank(&tank, fb, TANK_W); snprintf(path, sizeof path, "%s_ex_dog.ppm", prefix); write_ppm(path, fb);
+    tank_ball_throw(&tank, tank.ball_x - 5, tank.ball_y - 5);
+    for (int i = 0; i < 60 * 20 && tank.ball_state != BALL_CARRIED; i++) SH_RUN(1.0f / 60);
+    SH_RUN(0.5f); render_tank(&tank, fb, TANK_W); snprintf(path, sizeof path, "%s_ex_duck.ppm", prefix); write_ppm(path, fb);
+    tank.up_ball = 2; SH_RUN(6); render_tank(&tank, fb, TANK_W); snprintf(path, sizeof path, "%s_ex_frisbee.ppm", prefix); write_ppm(path, fb);
+    tank.treats_left = 5; tank_greyhound_pet(&tank); SH_RUN(0.6f);
+    render_tank(&tank, fb, TANK_W); snprintf(path, sizeof path, "%s_ex_treat.ppm", prefix); write_ppm(path, fb);
+    render_stats_card(&tank, RENDER_CARD_GREYHOUND, fb, TANK_W); snprintf(path, sizeof path, "%s_ex_card.ppm", prefix); write_ppm(path, fb);
+    SH_RUN(8);
+    tank.fine_left = 12; for (int i = 0; i < tank.n_fish; i++) tank.fish[i].hunger = 8;
+    tank_feed(&tank, TANK_W * 0.6f, 3); SH_RUN(0.8f);
+    render_tank(&tank, fb, TANK_W); snprintf(path, sizeof path, "%s_ex_gold.ppm", prefix); write_ppm(path, fb);
+    for (int i = 0; i < 60 * 30; i++) { SH_RUN(1.0f / 60); int sh = 0; for (int j = 0; j < tank.n_fish; j++) sh |= tank.fish[j].shine > 0; if (sh) break; }
+    SH_RUN(1); render_tank(&tank, fb, TANK_W); snprintf(path, sizeof path, "%s_ex_shine.ppm", prefix); write_ppm(path, fb);
+    tank.up_dog = 1; tank.up_ball = 0; tank.sd_balance = 760; render_shop_leave();
+    for (int pg = 0; pg < 4; pg++) render_shop_tap(&tank, PAGE_X + SHP_ARROW_X1 + 4, PAGE_Y + SHP_ARROW_Y + 4);
+    render_tank(&tank, fb, TANK_W); render_shop(&tank, fb, TANK_W); snprintf(path, sizeof path, "%s_ex_shop.ppm", prefix); write_ppm(path, fb);
+    render_shop_tap(&tank, PAGE_X + 100, PAGE_Y + SHP_ROW_Y0 + 0 * SHP_ROW_DY + 10);
+    render_tank(&tank, fb, TANK_W); render_shop(&tank, fb, TANK_W); snprintf(path, sizeof path, "%s_ex_modal.ppm", prefix); write_ppm(path, fb);
+    render_shop_leave(); tank.light_override = false;
+#undef SH_RUN
+    tank.sd_unlocks &= ~SD_ITEM_GREYHOUND; tank.sd_balance = 520;
+    render_shop_leave();
+    for (int pg = 0; pg < 3; pg++) render_shop_tap(&tank, PAGE_X + SHP_ARROW_X1 + 4, PAGE_Y + SHP_ARROW_Y + 4);   /* the last page */
+    render_tank(&tank, fb, TANK_W); render_shop(&tank, fb, TANK_W);
+    snprintf(path, sizeof path, "%s_shop.ppm", prefix); write_ppm(path, fb);
+    {                                                          /* open the greyhound's row: the last item, so the page's last row */
+        int rows = SD_ITEM_COUNT + progression_fry_for_sale(&tank) - !progression_pumpkin_offered(&tank);
+        int y = SHP_ROW_Y0 + ((rows - 1) % SHP_PER_PAGE) * SHP_ROW_DY + 10;
+        render_shop_tap(&tank, PAGE_X + 100, PAGE_Y + y);
+        render_tank(&tank, fb, TANK_W); render_shop(&tank, fb, TANK_W);
+        snprintf(path, sizeof path, "%s_modal.ppm", prefix); write_ppm(path, fb);
+    }
+    render_shop_leave();
+    printf("greyhound: wrote %s_00..07, _pet, _card, _ball, _fetch, _night, _shop, _modal (.ppm)\n", prefix);
+    return 0;
+}
 int main(int argc, char **argv) {
     if (getenv("PT_VEG_STEP")) render_set_veg_step(atoi(getenv("PT_VEG_STEP")));   /* the grass in row pairs (2026-10-24) */
     if (getenv("PT_GRASS_CACHE")) { static uint16_t sg[TANK_W * TANK_H]; static uint32_t bgm[RENDER_DIRTY_WORDS];   /* the grass cache (2026-10-24): its period in ms */
@@ -6872,6 +7220,7 @@ int main(int argc, char **argv) {
         if (strcmp(argv[a], "--pumpkin") == 0 && a + 1 < argc) return pumpkin_shot(argv[a + 1]);
         if (strcmp(argv[a], "--volcano") == 0 && a + 1 < argc) return volcano_shot(argv[a + 1]);
         if (strcmp(argv[a], "--crab") == 0 && a + 1 < argc) return crab_shot(argv[a + 1]);
+        if (strcmp(argv[a], "--greyhound") == 0 && a + 1 < argc) return greyhound_shot(argv[a + 1]);
         if (strcmp(argv[a], "--clip") == 0 && a + 1 < argc)
             return clip(argv[a + 1], a + 2 < argc ? atoi(argv[a + 2]) : 6);
         if (strcmp(argv[a], "--snapshot") == 0 && a + 1 < argc)
@@ -7046,6 +7395,12 @@ int main(int argc, char **argv) {
             else if (shop_view) {                       /* the shop: a row's modal, UNLOCK, HOW TO EARN, CLOSE */
                 int r = render_shop_tap(&tank, (float)press_x, (float)press_y);
                 if (r == SHOP_TAP_CLOSE) { shop_view = false; render_shop_leave(); milestones_view = true; }   /* back to the milestones page */
+                else if (r >= SHOP_TAP_EXTRA) {             /* a step or a pack (the greyhound mod) */
+                    int k = r - SHOP_TAP_EXTRA; const sd_step_t *st = progression_extra_next(&tank, k);
+                    const char *nm = st ? st->name : "?";
+                    if (progression_buy_extra(&tank, k)) { snd(SND_CONFIRM, AUDIO_PITCH_ONE); printf("shop: %s bought, %d sand dollars left\n", nm, tank.sd_balance); }
+                    else printf("shop: %s refused (balance %d)\n", nm, tank.sd_balance);
+                }
                 else if (r >= SHOP_TAP_PLACE) {             /* back from the shelf (0.3.9): the placement page, its old spot in place */
                     int item = r - SHOP_TAP_PLACE;
                     if (progression_unshelve(&tank, item)) { snd(SND_CONFIRM, AUDIO_PITCH_ONE); shop_view = false; render_shop_leave(); setup_begin_place(&tank, item);
@@ -7138,9 +7493,21 @@ int main(int argc, char **argv) {
                     if (selected_fish != was) tank_emit(TEV_WHEEL_TICK, -1);
                     printf("next fish: card %d (%s)\n", selected_fish, tank.fish[selected_fish].name);
                 }
+                else if (selected_fish == RENDER_CARD_GREYHOUND && render_greyhound_name_hit((float)press_x, (float)press_y)) {
+                    tank_greyhound_rename(&tank); progression_settings_changed();   /* its card's NEW NAME */
+                    printf("greyhound: renamed %s\n", tank_greyhound_name(&tank));
+                }
+                else if (selected_fish == RENDER_CARD_GREYHOUND && render_greyhound_card_hit((float)press_x, (float)press_y)) { }   /* on its card: it stays up */
                 else if (selected_fish >= 0 && selected_fish != RENDER_CARD_SNAIL && selected_fish != RENDER_CARD_SHRIMP && selected_fish != RENDER_CARD_URCHIN
-                         && selected_fish != RENDER_CARD_SEAHORSE && selected_fish != RENDER_CARD_CRAB && RENDER_CARD_HIT(press_x, press_y))
+                         && selected_fish != RENDER_CARD_SEAHORSE && selected_fish != RENDER_CARD_CRAB && selected_fish != RENDER_CARD_GREYHOUND && RENDER_CARD_HIT(press_x, press_y))
                     milestones_view = true;
+                else if (tank_ball_hit(&tank, (float)press_x, (float)press_y)) {   /* the ball: thrown, the dog fetches */
+                    tank_ball_throw(&tank, (float)press_x, (float)press_y); printf("ball: thrown\n");
+                }
+                else if (tank_greyhound_hit(&tank, (float)press_x, (float)press_y)) {   /* the greyhound: a pat, its card */
+                    tank_greyhound_pet(&tank); selected_fish = RENDER_CARD_GREYHOUND;
+                    printf("greyhound: a pat (%d) - %s\n", (int)tank.gh_pets, tank_greyhound_name(&tank));
+                }
                 else if ((selected_fish < 0 || selected_fish >= tank.n_fish) && render_tool_chip_hit(&tank, (float)press_x, (float)press_y)) {
                     tank_set_tool(&tank, TOOL_HAND); printf("toolbox: DONE - back to bare hands\n");
                 }

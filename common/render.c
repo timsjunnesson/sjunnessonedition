@@ -3204,6 +3204,303 @@ static bool slot_covers(int x, int y) {
         || ((g_guard_who & GUARD_URCHIN) && urchin_covers(g_guard, x, y));
 }
 
+/* ---- the greyhound, procedural (SD_ITEM_GREYHOUND) ----
+ * A fawn greyhound with a white blaze and a red collar, side on, nose to
+ * the right in its local frame (1 unit = 1 px, the body's centre at 0,0).
+ * Each frame its parts are stamped into a small tone buffer back to front -
+ * the far legs, the tail, the body (a deep chest, a tucked waist, the
+ * haunch), the neck and the long head, the near legs - then a 1 px dark
+ * edge goes round the silhouette and the buffer is laid on the water
+ * (mirrored when it faces left), tinted with the row's water like the
+ * urchin. The legs doggy-paddle on tank_t.gh_phase and the tail wags on it;
+ * a couple of bubbles rise from its nose. */
+#define GH_BW 78
+#define GH_BH 46
+#define GH_OX 39                       /* the buffer's cell for local x 0 */
+#define GH_OY 24
+enum { GHT_NONE, GHT_OUT, GHT_SHADE, GHT_BASE, GHT_LIGHT, GHT_FAR, GHT_EAR, GHT_WHITE, GHT_NOSE, GHT_EYE, GHT_GLINT, GHT_COLLAR, GHT_TAG, GHT_GOLD, GHT_GTAG, GHT_MASKF, GHT_GLASS, GHT_N };
+static const uint32_t GH_RGB[GHT_N] = { 0, 0x3a2416, 0x9c6a3f, 0xc8915a, 0xe2b783, 0x7a5032, 0x6a4024, 0xf3e8d8, 0x1b1310, 0x120d0a, 0xffffff, 0xd3343a, 0xf4cb4e, 0xe0a628, 0xfff4b8, 0x1f3f73, 0x9fe4f2 };
+#define GH_TINT 0.88f
+#define GH_FRAMES 12                   /* poses per paddle stroke */
+static uint8_t g_gh[GH_BH][GH_BW];
+static inline void gh_put(int lx, int ly, uint8_t tone) {
+    int bx = lx + GH_OX, by = ly + GH_OY;
+    if ((unsigned)bx < GH_BW && (unsigned)by < GH_BH) g_gh[by][bx] = tone;
+}
+/* an ellipse: lit on top, shaded underneath (tone NONE = use the light rule) */
+static void gh_ellipse(float cx, float cy, float rx, float ry, uint8_t flat) {
+    for (int y = (int)floorf(cy - ry); y <= (int)ceilf(cy + ry); y++)
+        for (int x = (int)floorf(cx - rx); x <= (int)ceilf(cx + rx); x++) {
+            float nx = (x + 0.5f - cx) / rx, ny = (y + 0.5f - cy) / ry;
+            if (nx * nx + ny * ny > 1.0f) continue;
+            uint8_t tone = flat;
+            if (!flat) tone = ny - nx * 0.25f < -0.45f ? GHT_LIGHT : ny > 0.5f ? GHT_SHADE : GHT_BASE;
+            gh_put(x, y, tone);
+        }
+}
+/* a capsule from (x0,y0) radius r0 to (x1,y1) radius r1; the same light
+ * rule across it (flat = one tone); *u_lo..u_hi limits it to part of its length */
+static void gh_capsule(float x0, float y0, float x1, float y1, float r0, float r1, uint8_t flat, float u_lo, float u_hi) {
+    float rm = r0 > r1 ? r0 : r1;
+    int xa = (int)floorf(fminf(x0, x1) - rm), xb = (int)ceilf(fmaxf(x0, x1) + rm);
+    int ya = (int)floorf(fminf(y0, y1) - rm), yb = (int)ceilf(fmaxf(y0, y1) + rm);
+    float dx = x1 - x0, dy = y1 - y0, l2 = dx * dx + dy * dy;
+    for (int y = ya; y <= yb; y++)
+        for (int x = xa; x <= xb; x++) {
+            float px_ = x + 0.5f - x0, py_ = y + 0.5f - y0;
+            float u = l2 > 0 ? (px_ * dx + py_ * dy) / l2 : 0;
+            u = u < 0 ? 0 : u > 1 ? 1 : u;
+            if (u < u_lo || u > u_hi) continue;
+            float ox = px_ - dx * u, oy = py_ - dy * u, r = r0 + (r1 - r0) * u;
+            float d2 = ox * ox + oy * oy;
+            if (d2 > r * r) continue;
+            uint8_t tone = flat;
+            if (!flat) { float ny = oy / r; tone = ny < -0.45f ? GHT_LIGHT : ny > 0.45f ? GHT_SHADE : GHT_BASE; }
+            gh_put(x, y, tone);
+        }
+}
+/* a leg from the hip: thigh at angle a1, shin at a2 (radians from straight
+ * down, + = toward the nose), a white paw at the end */
+static void gh_leg(float hx, float hy, float a1, float a2, float l1, float l2, float r, bool far) {
+    float kx = hx + sinf(a1) * l1, ky = hy + cosf(a1) * l1;
+    float px_ = kx + sinf(a2) * l2, py_ = ky + cosf(a2) * l2;
+    uint8_t flat = far ? GHT_FAR : 0;
+    gh_capsule(hx, hy, kx, ky, r * 1.25f, r, flat, 0, 1);
+    gh_capsule(kx, ky, px_, py_, r, r * 0.8f, flat, 0, 1);
+    gh_ellipse(px_ + sinf(a2) * 0.6f, py_ + 0.4f, r * 0.95f, r * 0.8f, far ? GHT_FAR : GHT_WHITE);
+}
+enum { GH_POSE_SWIM = 0, GH_POSE_HAPPY = 1, GH_POSE_SLEEP = 2 };
+static void gh_build(float ph, int pose, int lvl) {   /* lvl: the greyhound's steps (tank_t.up_dog) */
+    memset(g_gh, 0, sizeof g_gh);
+    bool sleep = pose == GH_POSE_SLEEP;
+    float s = sinf(ph), sc = cosf(ph), s2 = sinf(ph + 3.14159265f), c2 = cosf(ph + 3.14159265f);
+    /* the far legs, behind everything */
+    if (sleep) {                                                    /* lying down: forelegs out in front, hind legs tucked */
+        gh_leg(9, 5, 1.42f, 1.57f, 7.5f, 7.0f, 2.1f, true);
+        gh_leg(-18, 3, 0.85f, -1.45f, 7.0f, 7.0f, 2.2f, true);
+    } else {
+        gh_leg(9, 4, 0.95f + 0.8f * s2, 0.25f + 0.9f * s2 - 0.35f * c2, 7.5f, 7.0f, 2.1f, true);
+        gh_leg(-18, 2, -0.35f + 0.6f * sinf(ph + 4.7f), -0.9f + 0.6f * sinf(ph + 4.7f), 8.0f, 7.5f, 2.2f, true);
+    }
+    /* the tail: a long thin whip, wagging (harder when it is pleased); asleep, curled under */
+    { float wag = (pose == GH_POSE_HAPPY ? 7.0f : 4.0f) * sinf(ph * (pose == GH_POSE_HAPPY ? 3.0f : 1.7f));
+      float px0 = -22, py0 = -2, cx = -32, cy = 5 + wag, ex = -37, ey = -3 + wag * 0.6f, lx = px0, ly = py0;
+      if (sleep) { cx = -31; cy = 9; ex = -16; ey = 10; }
+      for (int k = 1; k <= 10; k++) {
+          float u = k / 10.0f, a = (1 - u) * (1 - u), b = 2 * u * (1 - u), d = u * u;
+          float x = a * px0 + b * cx + d * ex, y = a * py0 + b * cy + d * ey;
+          gh_capsule(lx, ly, x, y, 1.8f - 0.9f * (u - 0.1f), 1.8f - 0.9f * u, 0, 0, 1);
+          lx = x; ly = y;
+      } }
+    /* the body: haunch, waist, deep chest */
+    gh_ellipse(-15, -0.5f, 8.5f, 6.8f, 0);
+    gh_ellipse(-4, -2.0f, 12.0f, 4.8f, 0);
+    gh_ellipse(8, 1.0f, 12.0f, 8.6f, 0);
+    gh_ellipse(10, 6.0f, 6.5f, 3.4f, GHT_WHITE);                   /* the white blaze down the chest */
+    /* the neck and the long head (asleep: lowered onto its paws) */
+    float hb = sleep ? 6.0f : 0.8f * sinf(ph + 0.6f), hx = sleep ? 2.0f : 0.0f;
+    gh_capsule(13, -3, 20 + hx, -12 + hb, 4.6f, 3.6f, 0, 0, 1);
+    gh_capsule(13, -3, 20 + hx, -12 + hb, 4.7f, 3.7f, lvl >= 1 ? GHT_GOLD : GHT_COLLAR, 0.22f, 0.38f);   /* the collar round it (GOLD COLLAR: gold) */
+    gh_ellipse(17.6f + hx * 0.3f, -5.4f + hb * 0.3f, 1.4f, 1.4f, lvl >= 1 ? GHT_GTAG : GHT_TAG);     /* ... and its tag */
+    gh_ellipse(22 + hx, -13 + hb, 5.6f, 4.4f, 0);
+    gh_capsule(24 + hx, -12.6f + hb, 32 + hx, -10.4f + hb, 3.4f, 1.8f, 0, 0, 1);
+    gh_ellipse(32.6f + hx, -11.2f + hb, 1.8f, 1.6f, GHT_NOSE);
+    gh_capsule(26 + hx, -9.4f + hb, 31 + hx, -9.2f + hb, 0.6f, 0.5f, GHT_SHADE, 0, 1);   /* the mouth line */
+    /* the ear, folded back (a rose ear), flicking with the stroke; flat asleep */
+    gh_capsule(19.6f + hx, -15.8f + hb, 15.2f + hx, -15.6f + hb + (sleep ? 0.6f : 1.0f * sc), 2.0f, 1.3f, GHT_EAR, 0, 1);
+    int ex_ = 23 + (int)hx, ey_ = (int)floorf(-15.2f + hb);
+    if (sleep) { gh_put(ex_ - 1, ey_ + 1, GHT_EYE); gh_put(ex_, ey_ + 1, GHT_EYE); gh_put(ex_ + 1, ey_ + 1, GHT_EYE); }   /* eyes shut */
+    else {
+        gh_put(ex_, ey_, GHT_EYE); gh_put(ex_ + 1, ey_, GHT_EYE);
+        gh_put(ex_, ey_ + 1, GHT_EYE); gh_put(ex_ + 1, ey_ + 1, GHT_GLINT);
+    }
+    if (lvl >= 2) {                                                 /* DIVE MASK: a framed glass over the eye, the strap back under the ear */
+        gh_capsule(21 + hx, -15.4f + hb, 15.5f + hx, -13.6f + hb, 0.9f, 0.9f, GHT_MASKF, 0, 1);
+        gh_ellipse(23.9f + hx, -14.3f + hb, 3.4f, 2.9f, GHT_MASKF);
+        gh_ellipse(23.9f + hx, -14.3f + hb, 2.3f, 1.8f, GHT_GLASS);
+        if (sleep) { gh_put(ex_ - 1, ey_ + 1, GHT_EYE); gh_put(ex_, ey_ + 1, GHT_EYE); gh_put(ex_ + 1, ey_ + 1, GHT_EYE); }
+        else { gh_put(ex_, ey_, GHT_EYE); gh_put(ex_ + 1, ey_, GHT_EYE); gh_put(ex_, ey_ + 1, GHT_EYE); gh_put(ex_ + 1, ey_ + 1, GHT_GLINT); }
+        gh_put(ex_ + 2, ey_ - 1, GHT_GLINT);
+    }
+    /* the near legs, in front of the body */
+    if (sleep) {
+        gh_leg(12, 6, 1.45f, 1.57f, 7.5f, 7.0f, 2.2f, false);
+        gh_leg(-15, 4, 0.85f, -1.45f, 7.0f, 7.0f, 2.3f, false);
+    } else {
+        gh_leg(12, 5, 0.95f + 0.8f * s, 0.25f + 0.9f * s - 0.35f * sc, 7.5f, 7.0f, 2.2f, false);
+        gh_leg(-15, 3, -0.35f + 0.6f * sinf(ph + 1.57f), -0.9f + 0.6f * sinf(ph + 1.57f), 8.0f, 7.5f, 2.3f, false);
+    }
+    /* a 1 px dark edge round the silhouette */
+    static uint8_t edge[GH_BH][GH_BW];
+    memset(edge, 0, sizeof edge);
+    for (int y = 0; y < GH_BH; y++)
+        for (int x = 0; x < GH_BW; x++) {
+            if (g_gh[y][x]) continue;
+            bool n = (x > 0 && g_gh[y][x - 1] > GHT_OUT) || (x < GH_BW - 1 && g_gh[y][x + 1] > GHT_OUT)
+                  || (y > 0 && g_gh[y - 1][x] > GHT_OUT) || (y < GH_BH - 1 && g_gh[y + 1][x] > GHT_OUT);
+            if (n) edge[y][x] = 1;
+        }
+    for (int y = 0; y < GH_BH; y++)
+        for (int x = 0; x < GH_BW; x++) if (edge[y][x]) g_gh[y][x] = GHT_OUT;
+}
+/* the pose for the greyhound's state now, rebuilt only when it changes
+ * (GH_FRAMES poses a stroke; one pose asleep) */
+static void gh_pose(const tank_t *t) {
+    static int built = -1;
+    int pose = t->gh_sleep ? GH_POSE_SLEEP : t->gh_happy > 0 ? GH_POSE_HAPPY : GH_POSE_SWIM;
+    int q = pose == GH_POSE_SLEEP ? 0 : (int)floorf(t->gh_phase * (GH_FRAMES / 6.2831853f)) % (GH_FRAMES * 341);
+    int lvl = t->up_dog > 3 ? 3 : t->up_dog;
+    int key = (q * 4 + pose) * 4 + lvl;
+    if (key != built) { gh_build(q * (6.2831853f / GH_FRAMES), pose, lvl); built = key; }
+}
+static int gh_cy(const tank_t *t) {                                  /* the bob on the stroke, or the sleeper's breath */
+    float bob = t->gh_sleep ? 0.6f * sinf(t->gh_breath) : 1.2f * sinf(t->gh_phase * 2.0f);
+    return (int)floorf(t->gh_y + 0.5f + bob);
+}
+static void greyhound_box(const tank_t *t, int *x0, int *y0, int *x1, int *y1) {
+    int cx = (int)floorf(t->gh_x + 0.5f), cy = (int)floorf(t->gh_y + 0.5f);
+    *x0 = cx - GH_OX - 1; *x1 = cx + GH_OX + 1; *y0 = cy - GH_OY - 40; *y1 = cy + GH_BH - GH_OY + 2;
+}
+/* a pink heart, 7 x 6 */
+static const uint8_t GH_HEART[6] = { 0x36, 0x7f, 0x7f, 0x3e, 0x1c, 0x08 };
+/* a little z, 4 x 4 (and 6 x 6 for the bigger one) */
+static void gh_z(ctx_t *c, int x, int y, int n, uint32_t rgb, int a) {
+    for (int i = 0; i < n; i++) { px_blend(c, x + i, y, rgb, a); px_blend(c, x + i, y + n - 1, rgb, a); px_blend(c, x + n - 1 - i, y + i, rgb, a); }
+}
+static void draw_greyhound(ctx_t *c, const tank_t *t) {
+    if (!(t->sd_unlocks & SD_ITEM_GREYHOUND) || t->gh_x <= 0) return;
+    gh_pose(t);
+    int cx = (int)floorf(t->gh_x + 0.5f), cy = gh_cy(t);
+    int f = t->gh_facing < 0 ? -1 : 1;
+    if (t->gh_loop > 0) {                                           /* the LOOP TRICK: once round a 15 px circle, forward and up */
+        float a = (1 - t->gh_loop / GH_LOOP_S) * 6.2831853f;
+        cx += (int)(f * 15 * sinf(a)); cy -= (int)(15 * (1 - cosf(a)));
+    }
+    for (int by = 0; by < GH_BH; by++) {
+        int y = cy + by - GH_OY;
+        if (y < 0 || y >= TANK_H) continue;
+        uint32_t w = water_rgb(y);
+        for (int bx = 0; bx < GH_BW; bx++) {
+            uint8_t tone = g_gh[by][bx];
+            if (!tone) continue;
+            int x = f > 0 ? cx + bx - GH_OX : cx - (bx - GH_OX) - 1;
+            if (!CTX_IN(c, x, y)) continue;
+            px_blend(c, x, y, mix(w, GH_RGB[tone], GH_TINT), 255);
+        }
+    }
+    float hx = t->gh_sleep ? 24.0f : 22.0f, hy = t->gh_sleep ? -7.0f : -13.0f;   /* its head, local */
+    if (t->gh_sleep) {                                              /* zzz, drifting up from its head */
+        for (int k = 0; k < 2; k++) {
+            float u = fmodf(t->gh_breath * 0.12f + k * 0.5f, 1.0f);
+            float zx = hx + 4 + u * 10 + k * 3, zy = hy - 10 - u * 24;
+            int x = f > 0 ? cx + (int)zx : cx - (int)zx - 1;
+            int n = k ? 6 : 4;
+            gh_z(c, x, cy + (int)zy, n, 0xd8eef4, (int)(220 * (1 - u)));
+        }
+    } else if (t->gh_treat > 0) {                                   /* a treat: a bone in its mouth */
+        float nx = 31.0f, ny = -9.0f + (t->gh_sleep ? 6 : 0);
+        for (int yy = -3; yy <= 3; yy++)
+            for (int xx = -7; xx <= 7; xx++) {
+                bool knob = (xx <= -5 || xx >= 5) && (yy <= -1 || yy >= 1) && (abs(xx) - 5) * (abs(xx) - 5) + (abs(yy) - 2) * (abs(yy) - 2) <= 3;
+                bool bar = abs(yy) <= 1 && abs(xx) <= 6;
+                if (!knob && !bar) continue;
+                int x = f > 0 ? cx + (int)nx + xx : cx - (int)nx - 1 - xx;
+                px_blend(c, x, cy + (int)ny + yy, yy == -1 ? 0xffffff : yy >= 2 || (bar && yy == 1) ? 0xcfc4b0 : 0xf4ecdc, 255);
+            }
+    } else if (t->ball_state != BALL_CARRIED) {
+        /* bubbles from the nose: two at a time, each rising a beat apart */
+        for (int k = 0; k < 2; k++) {
+            float u = fmodf(t->gh_phase * 0.22f + k * 0.5f, 1.0f);
+            float bxl = 33.0f + 3.0f * sinf(u * 9.0f + k), byl = -13.0f - u * 20.0f;
+            float bx = f > 0 ? cx + bxl : cx - bxl - 1, by = cy + byl;
+            float r = 1.1f + u * 1.2f;
+            fill_ellipse(c, bx, by, r, r, 0x9fd8e2, (int)(110 * (1 - u)));
+            px_blend(c, (int)(bx - r * 0.4f), (int)(by - r * 0.4f), 0xffffff, (int)(150 * (1 - u)));
+        }
+    }
+    if (t->gh_happy > 0) {                                          /* a pat: hearts float up from its head */
+        float age = t->gh_happy_len - t->gh_happy;
+        for (int k = 0; k < 3; k++) {
+            float u = age * 0.75f - k * 0.3f;
+            if (u < 0 || u > 1) continue;
+            float lx = hx - 6 + k * 6 + 3 * sinf(u * 7 + k), ly = hy - 8 - u * 26;
+            int x0 = f > 0 ? cx + (int)lx : cx - (int)lx - 7, y0 = cy + (int)ly;
+            int a = (int)(255 * (u < 0.7f ? 1 : (1 - u) / 0.3f));
+            for (int yy = 0; yy < 6; yy++)
+                for (int xx = 0; xx < 7; xx++)
+                    if (GH_HEART[yy] >> (6 - xx) & 1) px_blend(c, x0 + xx, y0 + yy, yy == 1 && xx == 1 ? 0xffd0dc : 0xff4f7b, a);
+        }
+    }
+}
+/* the ball: red with a white band that rolls as it moves, a highlight up
+ * left, a dark rim; bobbing a pixel on the surface */
+/* the RUBBER DUCK (the ball's first step): a yellow duck, beak to its way */
+static void draw_duck(ctx_t *c, float bx, float by, int f) {
+    for (int y = (int)by - 10; y <= (int)by + 8; y++) {
+        if (y < 0 || y >= TANK_H) continue;
+        uint32_t w = water_rgb(y);
+        for (int x = (int)bx - 11; x <= (int)bx + 11; x++) {
+            if (!CTX_IN(c, x, y)) continue;
+            float lx = (x + 0.5f - bx) * f, ly = y + 0.5f - by;
+            uint32_t col = 0; bool on = false;
+            float bd = (lx / 8.5f) * (lx / 8.5f) + ((ly - 1.5f) / 5.5f) * ((ly - 1.5f) / 5.5f);
+            float hd = ((lx - 4) * (lx - 4) + (ly + 4.5f) * (ly + 4.5f)) / 16.0f;
+            if (lx >= 6.5f && lx <= 10.5f && ly >= -5.5f && ly <= -3.0f) { on = true; col = ly < -4.2f ? 0xffa23a : 0xe57212; }   /* the beak */
+            else if (bd <= 1 || hd <= 1) {
+                on = true;
+                col = (bd <= 1 && ly > 4) || (hd <= 1 && lx > 6) ? 0xe0a81c : 0xffd23f;
+                if ((bd <= 1 && ly < -1.5f && lx < 0) || (hd <= 1 && ly < -6.5f)) col = 0xfff09a;
+                if (lx >= -7.5f && lx <= -3 && ly >= 0 && ly <= 2) col = 0xe0a81c;   /* the wing */
+                if ((int)floorf(lx) == 5 && (int)floorf(ly) == -6) col = 0x1a1208;   /* the eye */
+            } else if ((bd <= 1.35f && bd > 1) || (hd <= 1.3f && hd > 1)) { on = true; col = 0x7a4a08; }   /* the outline */
+            if (on) px_blend(c, x, y, mix(w, col, 0.92f), 255);
+        }
+    }
+}
+/* the FRISBEE (the ball's second step): a blue disc seen edge-on, tilted */
+static void draw_frisbee(ctx_t *c, float bx, float by, float tilt) {
+    for (int y = (int)by - 7; y <= (int)by + 7; y++) {
+        if (y < 0 || y >= TANK_H) continue;
+        uint32_t w = water_rgb(y);
+        for (int x = (int)bx - 12; x <= (int)bx + 12; x++) {
+            if (!CTX_IN(c, x, y)) continue;
+            float lx = x + 0.5f - bx, ly = y + 0.5f - by - lx * tilt;
+            float d = (lx / 10.5f) * (lx / 10.5f) + (ly / 4.0f) * (ly / 4.0f);
+            if (d > 1.25f) continue;
+            uint32_t col = d > 1 ? 0x0f2a5a : ly > 1.6f ? 0x1d4e9e : d < 0.35f ? 0x5f9de8 : 0x2f6fd0;
+            if (d < 0.7f && d > 0.5f && ly < 0) col = 0x9cc8ff;              /* the ring on top */
+            px_blend(c, x, y, mix(w, col, 0.92f), 255);
+        }
+    }
+}
+static void draw_ball(ctx_t *c, const tank_t *t) {
+    if (!(t->sd_unlocks & SD_ITEM_BALL) || t->ball_x <= 0) return;
+    float bx = t->ball_x, by = t->ball_y;
+    if (t->ball_state == BALL_FLOAT && fabsf(t->ball_vy) < 1) by += 0.8f * sinf(t->clock * 2.1f);
+    int bf = t->ball_state == BALL_CARRIED ? (t->gh_facing < 0 ? -1 : 1) : t->ball_vx < -2 ? -1 : 1;
+    if (t->up_ball >= 2) { draw_frisbee(c, bx, by, t->ball_state == BALL_CARRIED ? 0.0f : 0.12f * sinf(t->ball_spin * 0.3f)); return; }
+    if (t->up_ball >= 1) { draw_duck(c, bx, by, bf); return; }
+    float cs = cosf(t->ball_spin), sn = sinf(t->ball_spin), R = BALL_R;
+    for (int y = (int)floorf(by - R - 1); y <= (int)ceilf(by + R + 1); y++) {
+        if (y < 0 || y >= TANK_H) continue;
+        uint32_t w = water_rgb(y);
+        for (int x = (int)floorf(bx - R - 1); x <= (int)ceilf(bx + R + 1); x++) {
+            if (!CTX_IN(c, x, y)) continue;
+            float lx = x + 0.5f - bx, ly = y + 0.5f - by, d2 = lx * lx + ly * ly;
+            if (d2 > (R + 0.9f) * (R + 0.9f)) continue;
+            uint32_t col;
+            if (d2 > R * R) col = 0x5a1216;                             /* the rim */
+            else {
+                float u = lx * cs + ly * sn;
+                col = fabsf(u) < 1.7f ? 0xf6f1ea : 0xd8323a;
+                if ((lx + 2.5f) * (lx + 2.5f) + (ly + 2.5f) * (ly + 2.5f) < 4.5f) col = 0xffffff;   /* the shine */
+                else if (lx + ly > R * 0.9f) col = fabsf(u) < 1.7f ? 0xc9c0b5 : 0x9e1f27;      /* the shade */
+            }
+            px_blend(c, x, y, mix(w, col, 0.92f), 255);
+        }
+    }
+}
+
 /* ---- the seahorse (0.3.6; the prototype is working-assets/seahorse/
  * seahorse_proto.py, built from Strato's sprite - the local frame IS that
  * sprite's 23 x 39 grid, facing right, 1 cell = 1 px; the same geometry +
@@ -4115,7 +4412,7 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
     g_dirty_hold = false;                          /* the tank draws in the frame's coordinates: its marks count */
     if (cached) memset(g_dirty, 0, TANK_H * DIRTY_WORDS_PER_ROW * sizeof(uint32_t));
     if (g_touched) memset(g_touched, 0, TANK_H * DIRTY_WORDS_PER_ROW * sizeof(uint32_t));   /* this frame's marks begin here */
-    struct { short x0, y0, x1, y1; } rects[6 + MAX_FOOD + MAX_BUBBLE + N_FISH_MAX + VEG_BEDS_MAX + SHRIMP_MAX];
+    struct { short x0, y0, x1, y1; } rects[9 + MAX_FOOD + MAX_BUBBLE + N_FISH_MAX + VEG_BEDS_MAX + SHRIMP_MAX];
     int nr = 0;
 #define DYN_RECT(cx0, cy0, cx1, cy1) do { if (cached && nr < (int)(sizeof rects / sizeof rects[0])) { \
         rects[nr].x0 = (short)(cx0); rects[nr].y0 = (short)(cy0); \
@@ -4266,8 +4563,14 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
     /* food pellets */
     for (int i = 0; i < MAX_FOOD; i++)
         if (t->food[i].alive) {
-            fill_ellipse(&c, t->food[i].x, t->food[i].y, 2.6f, 2.6f, 0xffbd59, 255);
-            fill_ellipse(&c, t->food[i].x - 0.8f, t->food[i].y - 0.8f, 1.0f, 1.0f, 0xffe9bd, 255);
+            bool gold = t->food[i].gold;                             /* FINE FOOD: golden, with a twinkle */
+            fill_ellipse(&c, t->food[i].x, t->food[i].y, gold ? 3.0f : 2.6f, gold ? 3.0f : 2.6f, gold ? 0xffd23a : 0xffbd59, 255);
+            fill_ellipse(&c, t->food[i].x - 0.8f, t->food[i].y - 0.8f, 1.0f, 1.0f, gold ? 0xffffff : 0xffe9bd, 255);
+            if (gold && sinf(t->clock * 6 + i) > 0.4f) {
+                int gx = (int)t->food[i].x + 3, gy = (int)t->food[i].y - 4;
+                px_blend(&c, gx, gy, 0xffffff, 230); px_blend(&c, gx - 1, gy, 0xfff3b0, 160); px_blend(&c, gx + 1, gy, 0xfff3b0, 160);
+                px_blend(&c, gx, gy - 1, 0xfff3b0, 160); px_blend(&c, gx, gy + 1, 0xfff3b0, 160);
+            }
             DYN_RECT((int)t->food[i].x - 5, (int)t->food[i].y - 5, (int)t->food[i].x + 5, (int)t->food[i].y + 5);
         }
     /* bubbles */
@@ -4304,6 +4607,19 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
     for (int i = 0; i < t->n_fish; i++) {
         g_bb_on = true; g_bb_x0 = g_bb_y0 = 1 << 20; g_bb_x1 = g_bb_y1 = -1;
         draw_fish(&c, t, &t->fish[i]);
+        if (t->fish[i].shine > 0) {                                  /* FINE FOOD: twinkles round the fish that ate it */
+            const fish_t *sf = &t->fish[i];
+            for (int k = 0; k < 3; k++) {
+                float ph = t->clock * 2.3f + k * 2.1f + i, tw = sinf(ph * 2.0f);
+                if (tw < 0.2f) continue;
+                int sx = (int)(sf->x + cosf(ph * 0.7f + k) * 16 * sf->size), sy = (int)(sf->y + sinf(ph * 0.9f + k * 2) * 9 * sf->size);
+                int a = (int)(255 * tw), r = tw > 0.75f ? 2 : 1;
+                px_blend(&c, sx, sy, 0xffffff, a);
+                for (int d = 1; d <= r; d++) { px_blend(&c, sx - d, sy, 0xfff3b0, a * 2 / 3); px_blend(&c, sx + d, sy, 0xfff3b0, a * 2 / 3);
+                                               px_blend(&c, sx, sy - d, 0xfff3b0, a * 2 / 3); px_blend(&c, sx, sy + d, 0xfff3b0, a * 2 / 3); }
+            }
+            DYN_RECT((int)(sf->x - 20 * sf->size) - 3, (int)(sf->y - 12 * sf->size) - 3, (int)(sf->x + 20 * sf->size) + 3, (int)(sf->y + 12 * sf->size) + 3);
+        }
         g_bb_on = false;
         if (g_bb_x1 >= g_bb_x0) DYN_RECT(g_bb_x0, g_bb_y0, g_bb_x1, g_bb_y1);
     }
@@ -4344,6 +4660,16 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
         if (!urchin_lane && !urchin_top) draw_urchin(&c, t);                                        /* (its front lane: the slot below, or the top lane with a page up) */
         DYN_RECT((int)t->urchin_x - 19, (int)URCHIN_FLOOR_Y - 17, (int)t->urchin_x + 19, (int)(URCHIN_FLOOR_Y + UR_BASE + t->urchin_dy) + 1);
     }
+    /* the greyhound paddling about: with the fish, under the front fronds and the pieces IN FRONT */
+    bool ball_up = (t->sd_unlocks & SD_ITEM_BALL) && t->ball_x > 0;
+    if (ball_up && t->ball_state != BALL_CARRIED) draw_ball(&c, t);  /* in the water: behind the dog */
+    if ((t->sd_unlocks & SD_ITEM_GREYHOUND) && t->gh_x > 0) {
+        draw_greyhound(&c, t);
+        int gx0, gy0, gx1, gy1; greyhound_box(t, &gx0, &gy0, &gx1, &gy1);
+        DYN_RECT(gx0, gy0, gx1, gy1);
+    }
+    if (ball_up && t->ball_state == BALL_CARRIED) draw_ball(&c, t);  /* in its mouth: in front */
+    if (ball_up) DYN_RECT((int)t->ball_x - 10, (int)t->ball_y - 10, (int)t->ball_x + 10, (int)t->ball_y + 10);
     PROF_ADD(8, p0);                                 /* the snail, the urchin and the crab */
     /* the pieces IN FRONT back over the fish (and the snail, the food, the
        bubbles), only where they were drawn: the scene holds them. The castle's
@@ -4958,6 +5284,56 @@ static void seahorse_card_draw(ctx_t *c, const tank_t *t) {
     draw_text(c, TX, Y + 156, 2, 0x9fd8e2, now);
 }
 
+/* the greyhound's card: a ring on it and a centred card - the dog as it is
+ * right now, its name, its days with the keeper, its pats and fetches, what
+ * it is doing, and NEW NAME (the next name on its list) */
+#define GH_CARD_X ((TANK_W - SEAHORSE_CARD_W) / 2)
+#define GH_CARD_Y ((TANK_H - SEAHORSE_CARD_H) / 2)
+#define GH_BTN_W  (6 * 2 * 8 - 2 + 20)                     /* NEW NAME at scale 2, padded */
+#define GH_BTN_H  28
+#define GH_BTN_X  (GH_CARD_X + SEAHORSE_CARD_W - GH_BTN_W - 12)
+#define GH_BTN_Y  (GH_CARD_Y + SEAHORSE_CARD_H - GH_BTN_H - 12)
+bool render_greyhound_name_hit(float x, float y) {
+    return x >= GH_BTN_X - 10 && x < GH_BTN_X + GH_BTN_W + 10 && y >= GH_BTN_Y - 10 && y < GH_BTN_Y + GH_BTN_H + 10;
+}
+bool render_greyhound_card_hit(float x, float y) {
+    return x >= GH_CARD_X && x < GH_CARD_X + SEAHORSE_CARD_W && y >= GH_CARD_Y && y < GH_CARD_Y + SEAHORSE_CARD_H;
+}
+static void rect_fill(ctx_t *c, int x, int y, int w, int h, uint32_t rgb);
+static void greyhound_card_draw(ctx_t *c, const tank_t *t) {
+    ring(c, t->gh_x, t->gh_y - 2, 44, 0x9fd8e2);
+    const int W = SEAHORSE_CARD_W, H = SEAHORSE_CARD_H, X = GH_CARD_X, Y = GH_CARD_Y;
+    src_t bg = src_color(0x04141a, 1.0f);
+    for (int y = Y; y < Y + H; y++) span(c, X, X + W - 1, y, &bg, 235);
+    rect_edge(c, X, Y, W, H, 0x9fd8e2); rect_edge(c, X + 1, Y + 1, W - 2, H - 2, 0x1c2f36);
+    gh_pose(t);
+    const int ox = X + 10, oy = Y + 34;
+    for (int by = 0; by < GH_BH; by++)
+        for (int bx = 0; bx < GH_BW; bx++) {
+            uint8_t tone = g_gh[by][bx];
+            if (tone) px_blend(c, ox + bx, oy + by, GH_RGB[tone], 255);
+        }
+    const int TX = X + 10 + GH_BW + 8;
+    draw_text(c, TX, Y + 16, 3, 0xffffff, tank_greyhound_name(t));
+    char line[32];
+    float days = tank_greyhound_days(t);
+    if (days < 1) snprintf(line, sizeof line, "HERE SINCE TODAY");
+    else snprintf(line, sizeof line, "%d DAY%s WITH YOU", (int)days, (int)days == 1 ? "" : "S");
+    draw_text(c, TX, Y + 50, 2, 0x9fd8e2, line);
+    snprintf(line, sizeof line, "%d PAT%s", (int)t->gh_pets, t->gh_pets == 1 ? "" : "S");
+    draw_text(c, TX, Y + 74, 2, 0xffffff, line);
+    if (t->gh_fetches > 0 || (t->sd_unlocks & SD_ITEM_BALL)) snprintf(line, sizeof line, "%d FETCH%s", (int)t->gh_fetches, t->gh_fetches == 1 ? "" : "ES");
+    else snprintf(line, sizeof line, "NO BALL YET");
+    draw_text(c, TX, Y + 98, 2, 0xffffff, line);
+    draw_text(c, TX, Y + 122, 2, 0x9fd8e2, tank_greyhound_doing(t));
+    rect_fill(c, GH_BTN_X, GH_BTN_Y, GH_BTN_W, GH_BTN_H, 0x14252b);
+    rect_edge(c, GH_BTN_X, GH_BTN_Y, GH_BTN_W, GH_BTN_H, 0x9fd8e2);
+    draw_text(c, GH_BTN_X + (GH_BTN_W - text_w("NEW NAME", 2)) / 2, GH_BTN_Y + (GH_BTN_H - 14) / 2, 2, 0xffffff, "NEW NAME");
+    if (t->treats_left > 0) { snprintf(line, sizeof line, "%d TREAT%s LEFT", (int)t->treats_left, t->treats_left == 1 ? "" : "S");
+                              draw_text(c, X + 12, Y + H - 26, 2, 0xffd23a, line); }
+    else draw_text(c, X + 12, Y + H - 26, 2, 0x5a7a82, "TAP IT FOR A PAT");
+}
+
 static void tools_draw(ctx_t *c, const tank_t *t);   /* the toolbox, below */
 static void next_draw(ctx_t *c, const tank_t *t);    /* the NEXT FISH arrow, below */
 void render_stats_card(const tank_t *t, int fish_idx, uint16_t *fb, int stride) {
@@ -4983,6 +5359,12 @@ void render_stats_card(const tank_t *t, int fish_idx, uint16_t *fb, int stride) 
         if (!(t->sd_unlocks & SD_ITEM_SEAHORSE) || t->sh_x < 0) return;
         ctx_t sc = ctx_full(fb, stride, 1.0f);
         seahorse_card_draw(&sc, t);
+        return;
+    }
+    if (fish_idx == RENDER_CARD_GREYHOUND) {
+        if (!(t->sd_unlocks & SD_ITEM_GREYHOUND) || t->gh_x <= 0) return;
+        ctx_t sc = ctx_full(fb, stride, 1.0f);
+        greyhound_card_draw(&sc, t);
         return;
     }
     if (fish_idx == RENDER_CARD_SNAIL) {
@@ -6013,7 +6395,7 @@ void render_notice(const tank_t *t, uint16_t *fb, int stride, int kind, int fish
 static int  g_shp_modal = -1;        /* the item whose modal is up, or -1 */
 static bool g_shp_earn;              /* the HOW TO EARN modal is up */
 static bool g_shp_sell_armed;        /* SELL tapped once: the next tap on it sells */
-static const icon_t *shop_icon(int item) { return item == 0 ? &icon_shop_plant : item == 1 ? &icon_shop_snail : item == 2 ? &icon_shop_castle : item == 3 ? &icon_shop_coral : item == 4 ? &icon_shop_cluster : item == 5 ? &icon_shop_shrimp : item == 6 ? &icon_shop_urchin : item == 7 ? &icon_shop_seahorse : item == 8 ? &icon_shop_pumpkin : item == 9 ? &icon_shop_volcano : &icon_shop_crab; }
+static const icon_t *shop_icon(int item) { return item == 0 ? &icon_shop_plant : item == 1 ? &icon_shop_snail : item == 2 ? &icon_shop_castle : item == 3 ? &icon_shop_coral : item == 4 ? &icon_shop_cluster : item == 5 ? &icon_shop_shrimp : item == 6 ? &icon_shop_urchin : item == 7 ? &icon_shop_seahorse : item == 8 ? &icon_shop_pumpkin : item == 9 ? &icon_shop_volcano : item == 11 ? &icon_shop_greyhound : item == 12 ? &icon_shop_ball : &icon_shop_crab; }
 /* pages (2026-09-23, the fourth item): SHP_PER_PAGE rows fit between the
  * coin and the foot buttons once the filler caption went (HOW TO EARN says
  * the same). With more items than a page holds, arrows at the header's
@@ -6037,10 +6419,75 @@ static void price_tag(ctx_t *c, int x, int y, int price, uint32_t rgb) {   /* th
  * numbered across the pages; row 0 is FRY when it shows, the items after */
 #define SHP_MODAL_FRY 99             /* g_shp_modal: the fry's modal */
 static int g_shp_fry_pick;           /* the fry picked in its modal */
+/* the extras' rows and modal (the greyhound mod): a step shows its name,
+ * the next price and UPGRADE (DONE when all are bought), STEP n OF m under
+ * the name in its modal; a pack shows BUY and how many are left */
+static const icon_t *shop_icon(int item);
+static void price_tag(ctx_t *c, int x, int y, int price, uint32_t rgb);
+static const icon_t *shop_extra_icon(int k) {
+    return k == SD_EX_DOG ? &icon_shop_greyhound : k == SD_EX_BALL ? &icon_shop_ball : k == SD_EX_FINE ? &icon_shop_fine_food : &icon_shop_treats;
+}
+static void shop_extra_row(ctx_t *c, const tank_t *t, int k, int top) {
+    const sd_step_t *st = progression_extra_next(t, k);
+    bool pack = progression_extra_is_pack(k), can = st && t->sd_balance >= st->price;
+    blit_icon(c, 32, top, shop_extra_icon(k), 255);
+    char line[32];
+    if (st) draw_text(c, 76, top + 2, 2, 0xffffff, st->name);
+    else draw_text(c, 76, top + 2, 2, 0xffffff, k == SD_EX_DOG ? "GREYHOUND" : k == SD_EX_BALL ? "BALL" : pack ? "FULL" : "");
+    if (st) price_tag(c, 76, top + 20, st->price, can ? MSP_TEAL : MSP_DIM);
+    else { snprintf(line, sizeof line, pack ? "99 IN STOCK" : "ALL STEPS DONE"); draw_text(c, 76, top + 20, 2, MSP_TEAL, line); }
+    const char *b = !st ? "DONE" : pack ? "BUY" : "UPGRADE";
+    if (can) { button(c, SHP_BTN_X, top, SHP_BTN_W, SHP_BTN_H, MSP_TEAL, MSP_TEAL, b, 2);
+               draw_text(c, SHP_BTN_X + (SHP_BTN_W - text_w(b, 2)) / 2, top + (SHP_BTN_H - 14) / 2, 2, MSP_INK, b); }
+    else button(c, SHP_BTN_X, top, SHP_BTN_W, SHP_BTN_H, st ? 0x1c2f36 : MSP_INK, MSP_DIM, b, 2);
+}
+static void shop_extra_modal(ctx_t *c, const tank_t *t, int k) {
+    const int X = SHP_MODAL_X, W = SHP_MODAL_W, Y = SHP_MODAL_Y, H = SHP_MODAL_H;
+    const sd_step_t *st = progression_extra_next(t, k);
+    bool pack = progression_extra_is_pack(k), can = st && t->sd_balance >= st->price;
+    rect_fill(c, X, Y, W, H, 0x04141a);
+    rect_edge(c, X, Y, W, H, MSP_TEAL); rect_edge(c, X + 1, Y + 1, W - 2, H - 2, 0x1c2f36);
+    blit_icon_scaled(c, X + (W - 64) / 2, Y + 14, shop_extra_icon(k), 2, true);
+    char line[32];
+    const int bx = X + (W - MSP_HOW_W) / 2, by = Y + H - 12 - MSP_HOW_H;
+    if (!st) {
+        const char *nm = pack ? "FULL UP" : "ALL DONE";
+        draw_text(c, X + (W - text_w(nm, 3)) / 2, Y + 88, 3, 0xffffff, nm);
+        if (pack) snprintf(line, sizeof line, "YOU HAVE %d", progression_extra_level(t, k));
+        else snprintf(line, sizeof line, "ALL %d STEPS BOUGHT", progression_extra_steps(k));
+        draw_text(c, X + (W - text_w(line, 2)) / 2, Y + 124, 2, MSP_TEAL, line);
+        return;
+    }
+    draw_text(c, X + (W - text_w(st->name, 3)) / 2, Y + 88, 3, 0xffffff, st->name);
+    draw_text(c, X + (W - text_w(st->words, 2)) / 2, Y + 118, 2, MSP_TEAL, st->words);
+    draw_text(c, X + (W - text_w(st->words2, 2)) / 2, Y + 138, 2, MSP_TEAL, st->words2);
+    if (pack) snprintf(line, sizeof line, "YOU HAVE %d", progression_extra_level(t, k));
+    else snprintf(line, sizeof line, "STEP %d OF %d", progression_extra_level(t, k) + 1, progression_extra_steps(k));
+    snprintf(line + strlen(line), sizeof line - strlen(line), "  -");
+    line[strlen(line) - 3] = 0;
+    char pr[16]; snprintf(pr, sizeof pr, "%d", st->price);
+    int pw = 20 + text_w(pr, 2), lw = text_w(line, 2);
+    int x0 = X + (W - (lw + 16 + pw)) / 2;
+    draw_text(c, x0, Y + 166, 2, MSP_DIM, line);
+    price_tag(c, x0 + lw + 16, Y + 164, st->price, can ? 0xffffff : MSP_DIM);
+    const char *b = pack ? "BUY" : "UPGRADE";
+    if (can) { button(c, bx, by, MSP_HOW_W, MSP_HOW_H, MSP_TEAL, MSP_TEAL, b, 2);
+               draw_text(c, bx + (MSP_HOW_W - text_w(b, 2)) / 2, by + (MSP_HOW_H - 14) / 2, 2, MSP_INK, b); }
+    else button(c, bx, by, MSP_HOW_W, MSP_HOW_H, 0x1c2f36, MSP_DIM, b, 2);
+}
+
 static bool shp_fry(const tank_t *t) { return progression_fry_for_sale(t); }
-static int  shp_rows(const tank_t *t) { return SD_ITEM_COUNT + shp_fry(t) - !progression_pumpkin_offered(t); }   /* the pumpkin, the last item, only while this build sells it (or owned) */
+#define SHP_EXTRA 200                /* shp_item / g_shp_modal: SHP_EXTRA + an SD_EX_* (a step or a pack) */
+static int  shp_base_rows(const tank_t *t) { return SD_ITEM_COUNT + shp_fry(t) - !progression_pumpkin_offered(t); }
+static int  shp_extras(const tank_t *t, int *list) {            /* the extras on offer now, in order */
+    int n = 0;
+    for (int k = 0; k < SD_EX_COUNT; k++) if (progression_extra_offered(t, k)) { if (list) list[n] = k; n++; }
+    return n;
+}
+static int  shp_rows(const tank_t *t) { return shp_base_rows(t) + shp_extras(t, NULL); }   /* the pumpkin's row only while this build sells it (or owned) */
 static int  shp_pages(const tank_t *t) { return (shp_rows(t) + SHP_PER_PAGE - 1) / SHP_PER_PAGE; }
 static int  shp_item(const tank_t *t, int row) {                                       /* -1 = the FRY row; the pumpkin's row (8) is skipped while it is out of the shop */
+    if (row >= shp_base_rows(t)) { int list[SD_EX_COUNT]; shp_extras(t, list); return SHP_EXTRA + list[row - shp_base_rows(t)]; }   /* the greyhound mod's extras */
     int i = shp_fry(t) ? row - 1 : row;
     if (i >= 8 && !progression_pumpkin_offered(t)) i++;
     return i;
@@ -6218,6 +6665,7 @@ void render_shop(const tank_t *t, uint16_t *fb, int stride) {
     for (int r = g_shp_page * SHP_PER_PAGE; r < shp_rows(t) && r < (g_shp_page + 1) * SHP_PER_PAGE; r++) {
         int top = SHP_ROW_Y0 + (r - g_shp_page * SHP_PER_PAGE) * SHP_ROW_DY, i = shp_item(t, r);
         if (i < 0) { shop_fry_row(&c, t, fb, stride, top); continue; }
+        if (i >= SHP_EXTRA) { shop_extra_row(&c, t, i - SHP_EXTRA, top); continue; }
         const sd_item_t *it = &SD_ITEMS[i];
         bool owned = (t->sd_unlocks & it->bit) != 0, can = t->sd_balance >= it->price, shelved = owned && (t->sd_shelved & it->bit);
         if (shelved) shelf_slot(&c, 32, top, t, i, 1);                                                             /* the shelf (0.3.9): the piece as it is, in its little tank */
@@ -6250,6 +6698,7 @@ void render_shop(const tank_t *t, uint16_t *fb, int stride) {
         return;
     }
     if (g_shp_modal == SHP_MODAL_FRY) { shop_fry_modal(&c, t, fb, stride); return; }
+    if (g_shp_modal >= SHP_EXTRA) { shop_extra_modal(&c, t, g_shp_modal - SHP_EXTRA); return; }
     const sd_item_t *it = &SD_ITEMS[g_shp_modal];
     const int Y = SHP_MODAL_Y, H = SHP_MODAL_H;
     bool owned = (t->sd_unlocks & it->bit) != 0, can = t->sd_balance >= it->price;
@@ -6300,6 +6749,14 @@ int render_shop_tap(const tank_t *t, float x, float y) {
         fry_offer_t pk; progression_fry_offer(g_shp_fry_pick, &pk);
         g_shp_modal = -1;
         if (on_btn && !pk.sold && progression_fry_room(t) && t->sd_balance >= SD_PRICE_FRY) return SHOP_TAP_FRY + g_shp_fry_pick;
+        return SHOP_TAP_KEPT;
+    }
+    if (g_shp_modal >= SHP_EXTRA) {                           /* a step or a pack: BUY / UPGRADE, elsewhere closes */
+        int k = g_shp_modal - SHP_EXTRA; const sd_step_t *st = progression_extra_next(t, k);
+        const int bx = SHP_MODAL_X + (SHP_MODAL_W - MSP_HOW_W) / 2, by = SHP_MODAL_Y + SHP_MODAL_H - 12 - MSP_HOW_H;
+        bool on_btn = y >= by - MSP_HOW_SLOP_UP && y < by + MSP_HOW_H + MSP_HOW_SLOP_DN && x >= bx - MSP_HOW_SLOP_X && x < bx + MSP_HOW_W + MSP_HOW_SLOP_X;
+        g_shp_modal = -1;
+        if (on_btn && st && t->sd_balance >= st->price) return SHOP_TAP_EXTRA + k;
         return SHOP_TAP_KEPT;
     }
     if (g_shp_modal >= 0) {

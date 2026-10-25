@@ -330,6 +330,7 @@ typedef struct {
      * parent_b's, bold / sociable the pair's average with a nudge. -1 = one
      * of the founding pair (or an older save). Saved per fish. */
     int8_t parent_a, parent_b;
+    float    shine;                /* s left of a FINE FOOD pellet's sparkle (the shop's extras; not saved) */
 } fish_t;
 
 /* a pellet: it sinks FOOD_SINK_PX_S from the surface to the floor (~43 s on
@@ -337,7 +338,7 @@ typedef struct {
  * dissolves (2026-09-29, for the shrimp school - every tank alike; measured:
  * the fish's hunger is unchanged). floor_s = seconds on the floor so far,
  * nibbled = seconds of shrimp pecking (SHRIMP_PECK_S eats it). */
-typedef struct { float x, y, age; bool alive, from_player; float floor_s, nibbled; } food_t;
+typedef struct { float x, y, age; bool alive, from_player; float floor_s, nibbled; bool gold; } food_t;   /* gold: a FINE FOOD pellet (the shop's extras) */
 #define FOOD_FLOOR_Y   (TANK_BOT - 14)  /* where a pellet comes to rest */
 #define FISH_FLOOR_Y   (TANK_BOT - 16)  /* the sand line: a fish is never DRAWN below it (render.c) - a fin
                                          * that reaches the floor touches it instead of showing through it
@@ -631,6 +632,43 @@ typedef struct tank {
                                     * SH_SNAP_S and the pellet is taken at SH_SNAP_AT, with the fish's eat cue */
     int8_t   sh_snap_food;         /* the pellet it is snatching, -1 once taken (or missed) */
     float    sh_turn;              /* a beat after it turned to face a pellet on its other side, before the snatch */
+    /* the greyhound (SD_ITEM_GREYHOUND): a racing dog that doggy-paddles
+     * laps round the tank, now and then breaks into zoomies, and paddles
+     * over to a finger held on the glass. Only the purchase is saved (the
+     * sd_unlocks bit); where it swims is not - a boot puts it back in the
+     * water (gh_x <= 0 = not placed yet). */
+    float    gh_x, gh_y;           /* the centre of its body */
+    float    gh_vx, gh_vy;         /* px/s, with momentum and the water's drag */
+    float    gh_tx, gh_ty;         /* where it is paddling to */
+    float    gh_phase;             /* the paddle stroke, radians (legs, tail, bob) */
+    float    gh_rest;              /* s left treading water before the next lap */
+    float    gh_zoom;              /* s left of zoomies (a sprint across the tank) */
+    float    gh_zoom_in;           /* s until the next zoomies */
+    int8_t   gh_facing;            /* +1 = its nose points right */
+    /* its life with the keeper (saved): the time, the pats, the fetches, its
+     * name (an index into GH_NAMES + 1; 0 = none yet, one is given) */
+    float    gh_s;
+    int32_t  gh_pets, gh_fetches;
+    uint8_t  gh_name;
+    /* the moment (not saved) */
+    float    gh_happy;             /* s left of a pat's wag and hearts */
+    bool     gh_sleep;             /* lights out, it lies on the sand (by the castle's door if there is one) */
+    float    gh_breath;            /* the sleeper's slow breath, radians */
+    /* the ball (SD_ITEM_BALL): it floats up to the surface; a tap throws it,
+     * the greyhound fetches it and brings it back to the middle of the glass.
+     * Only the purchase is saved. ball_x <= 0 = not in the water yet. */
+    float    ball_x, ball_y, ball_vx, ball_vy, ball_spin;
+    uint8_t  ball_state;           /* BALL_FLOAT / BALL_THROWN (the dog is after it) / BALL_CARRIED */
+    float    gh_play_in;           /* s until it noses the ball about by itself */
+    float    gh_happy_len;         /* how long the current wag lasts (hearts time from it) */
+    float    gh_treat;             /* s left with a treat in its mouth (then: zoomies) */
+    float    gh_loop;              /* s left of its loop the loop (the LOOP TRICK step) */
+    /* the shop's extras (saved): the steps bought for the greyhound (0..3:
+     * GOLD COLLAR, DIVE MASK, LOOP TRICK) and the ball (0..2: RUBBER DUCK,
+     * FRISBEE), and the packs not used yet */
+    uint8_t  up_dog, up_ball;
+    int16_t  fine_left;            /* FINE FOOD pellets: the keeper's next pellets are golden */
+    int16_t  treats_left;          /* DOG TREATS: a pat gives one */
     /* where the keeper put the decor (2026-09-16, the placement page): the
      * sword plant's centre x along the floor (<= 0 = the default spot) and
      * its depth layer (DECOR_Z_*). Both saved. */
@@ -993,7 +1031,8 @@ void  tank_set_bubble_x(tank_t *t, float x);
  * they put it back. */
 enum { SD_ITEM_PLANT = 1u << 0, SD_ITEM_SNAIL = 1u << 1, SD_ITEM_CASTLE = 1u << 2, SD_ITEM_CORAL = 1u << 3, SD_ITEM_CLUSTER = 1u << 4, SD_ITEM_SHRIMP = 1u << 5,
        SD_ITEM_URCHIN = 1u << 6, SD_ITEM_SEAHORSE = 1u << 7, SD_ITEM_PUMPKIN = 1u << 8, SD_ITEM_VOLCANO = 1u << 9, SD_ITEM_CRAB = 1u << 10,
-       SD_ITEM_COUNT = 11 };
+       SD_ITEM_GREYHOUND = 1u << 11, SD_ITEM_BALL = 1u << 12,   /* the greyhound mod (its first saves had them at 9 and 10: progression.c moves them) */
+       SD_ITEM_COUNT = 13 };
 /* per-fish paid bits (sd_paid_fish) */
 enum { SD_PAID_JUV = 1u << 0, SD_PAID_ADULT = 1u << 1, SD_PAID_ELDER = 1u << 2, SD_PAID_TRUST = 1u << 3 };
 #define PX_PER_INCH 24.0f          /* the tank reads as ~15 in tall; a fish ~1.7 in */
@@ -1357,5 +1396,36 @@ void  tank_seahorse_place(tank_t *t);              /* fresh in the tank: on a bl
 const char *tank_seahorse_holding(const tank_t *t); /* its card: A BLADE / A LEAF / THE CASTLE / THE CORAL / THE REEF / THE VOLCANO / THE SAND */
 bool  tank_seahorse_hit(const tank_t *t, float x, float y);
 float tank_seahorse_days(const tank_t *t);        /* its card: whole days with the keeper */
+
+/* the greyhound (SD_ITEM_GREYHOUND; tank_t has the story). It swims in open
+ * water at GH_SWIM_PX_S, sprints at GH_ZOOM_PX_S for a few seconds every
+ * GH_ZOOM_MIN_S..GH_ZOOM_MAX_S, and comes to a finger held on the glass. */
+#define GH_HALF_W      36.0f       /* nose to tail, half (the renderer's sprite is 72 px) */
+#define GH_HALF_H      20.0f
+#define GH_SWIM_PX_S   34.0f
+#define GH_ZOOM_PX_S   120.0f
+#define GH_ZOOM_S      3.5f
+#define GH_ZOOM_MIN_S  45.0f
+#define GH_ZOOM_MAX_S  120.0f
+void  tank_greyhound_place(tank_t *t);             /* fresh in the tank: mid-water, mid-tank */
+bool  tank_greyhound_zooming(const tank_t *t);
+bool  tank_greyhound_hit(const tank_t *t, float x, float y);
+void  tank_greyhound_pet(tank_t *t);               /* a tap on it: a wag, hearts, the count */
+float tank_greyhound_days(const tank_t *t);        /* its card: days with the keeper */
+const char *tank_greyhound_name(const tank_t *t);  /* its card: its name */
+void  tank_greyhound_rename(tank_t *t);            /* its card's NEW NAME: the next one on the list */
+const char *tank_greyhound_doing(const tank_t *t); /* its card: ASLEEP / DOING ZOOMIES / FETCHING ... */
+#define GH_NAME_COUNT  16
+#define GH_DODGE_R     80.0f       /* fish this close to it in its zoomies dart aside */
+#define GH_PET_S       3.0f        /* a pat's wag and hearts */
+enum { BALL_FLOAT = 0, BALL_THROWN = 1, BALL_CARRIED = 2 };
+#define BALL_R         7.0f
+void  tank_ball_place(tank_t *t);
+bool  tank_ball_hit(const tank_t *t, float x, float y);
+void  tank_ball_throw(tank_t *t, float x, float y); /* a tap on the ball: flung away from the tap, the dog goes */
+#define GH_TREAT_S     2.5f        /* a treat in its mouth, then zoomies */
+#define GH_LOOP_S      1.3f        /* the LOOP TRICK */
+#define FINE_SHINE_S   600.0f      /* a golden pellet's sparkle on the fish that ate it */
+#define FINE_TRUST     0.25f       /* ... and the trust it adds, over a plain pellet's */
 
 #endif
