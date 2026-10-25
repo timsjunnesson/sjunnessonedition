@@ -81,23 +81,25 @@ jobs:
           path: firmware
           command: idf.py -B build-square -DSDKCONFIG=build-square/sdkconfig "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.square" build
       # Only the public repo publishes: it tracks model/out/model_q4.bin and
-      # owns the Pages site. Anywhere else (the dev repo ignores model/out/*)
+      # owns the Pages site - and a FORK of it (it has the model too), to its
+      # own Pages site, https://<owner>.github.io/<repo>/, so a modded tank
+      # (the greyhound) installs from the browser like the stock one. Anywhere else (the dev repo ignores model/out/*)
       # the job stops here, a compile check of the firmware.
       - name: Assemble the installer
-        if: github.repository == 'mediacutlet/pocket-tank'
+        if: github.repository == 'mediacutlet/pocket-tank' || github.repository_owner != 'mediacutlet'
         run: |
           python3 tools/make_installer.py --build-dir firmware/build \
             --board-build firmware/build-round --board-build firmware/build-watch --board-build firmware/build-square --out installer/dist
           touch installer/dist/.nojekyll
           ls -la installer/dist installer/dist/firmware
       - uses: actions/upload-pages-artifact@v3
-        if: github.repository == 'mediacutlet/pocket-tank'
+        if: github.repository == 'mediacutlet/pocket-tank' || github.repository_owner != 'mediacutlet'
         with:
           path: installer/dist
 
   deploy:
     needs: build
-    if: github.repository == 'mediacutlet/pocket-tank'
+    if: github.repository == 'mediacutlet/pocket-tank' || github.repository_owner != 'mediacutlet'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
