@@ -3434,6 +3434,104 @@ static void draw_greyhound(ctx_t *c, const tank_t *t) {
 }
 /* the ball: red with a white band that rolls as it moves, a highlight up
  * left, a dark rim; bobbing a pixel on the surface */
+/* ---- love across the species: the hearts between a pair, the babies ----
+ * A baby is drawn from its parents: a round body in a's colour with b's
+ * on its belly, a dark rim, an eye, and every parent's marks - the dog's
+ * floppy ear and whip tail, a fish's tail fin and back fin, the crab's
+ * claws, the seahorse's snout and curled tail, the snail's shell, the
+ * urchin's spines. It grows from 0.5 to 1 over BABY_GROW_S. */
+static void draw_text(ctx_t *c, int x, int y, int scale, uint32_t rgb, const char *s);
+static int text_w(const char *s, int scale);
+static void baby_heart(ctx_t *c, int x0, int y0, int a) {
+    for (int yy = 0; yy < 6; yy++)
+        for (int xx = 0; xx < 7; xx++)
+            if (GH_HEART[yy] >> (6 - xx) & 1) px_blend(c, x0 + xx, y0 + yy, yy == 1 && xx == 1 ? 0xffd0dc : 0xff4f7b, a);
+}
+static void baby_mark(ctx_t *c, int kind, bool back, float x, float y, float k, int f, float ph, uint32_t own, uint32_t fin) {
+    #define BX(lx) (x + f * (lx) * k)
+    #define BY(ly) (y + (ly) * k)
+    switch (kind) {
+    case LK_DOG:
+        if (back) for (int i = 0; i < 4; i++) {                       /* the whip tail, wagging */
+            float u = i / 3.0f; fill_ellipse(c, BX(-9 - u * 6), BY(-1 - u * 4 + 1.5f * sinf(ph * 2 + u * 2)), 1.0f * k, 1.0f * k, own, 255); }
+        else fill_ellipse(c, BX(2.5f), BY(-4.5f), 2.2f * k, 3.2f * k, 0x6a4024, 255);   /* the floppy ear */
+        break;
+    case LK_FISH:
+        if (back) { float w = 1.2f * sinf(ph * 2);                     /* the tail fin, a V */
+            fill_ellipse(c, BX(-11.5f), BY(-2.5f + w), 3.2f * k, 1.8f * k, fin, 255);
+            fill_ellipse(c, BX(-11.5f), BY(2.5f + w), 3.2f * k, 1.8f * k, fin, 255); }
+        else fill_ellipse(c, BX(-1), BY(-6.2f), 3.2f * k, 1.6f * k, fin, 230);   /* the back fin */
+        break;
+    case LK_CRAB:
+        if (!back) { fill_ellipse(c, BX(7), BY(5.5f), 2.2f * k, 1.9f * k, 0xe0414a, 255);
+                     fill_ellipse(c, BX(3), BY(6.5f), 2.0f * k, 1.7f * k, 0xe0414a, 255);
+                     px_blend(c, (int)BX(8.6f), (int)BY(5.0f), 0x5a1216, 255); px_blend(c, (int)BX(4.4f), (int)BY(6.0f), 0x5a1216, 255); }
+        else for (int i = 0; i < 3; i++) fill_ellipse(c, BX(-4 + i * 3), BY(6.5f), 0.8f * k, 1.6f * k, 0xb02a34, 255);
+        break;
+    case LK_SEAHORSE:
+        if (!back) { fill_ellipse(c, BX(10), BY(-0.5f), 3.2f * k, 1.2f * k, 0xf2a33a, 255); }
+        else for (int i = 0; i < 9; i++) {                             /* the curled tail */
+            float a = i * 0.7f; fill_ellipse(c, BX(-6 - 2.2f * cosf(a)), BY(6 + 2.2f * sinf(a) + i * 0.15f), 1.0f * k, 1.0f * k, 0xd88a24, 255); }
+        break;
+    case LK_SNAIL:
+        if (back) { fill_ellipse(c, BX(-3), BY(-4.5f), 4.6f * k, 4.6f * k, 0x6e4a24, 255);
+                    fill_ellipse(c, BX(-3), BY(-4.5f), 3.8f * k, 3.8f * k, 0xb07a44, 255);
+                    fill_ellipse(c, BX(-2.4f), BY(-4.9f), 2.2f * k, 2.2f * k, 0xd8a868, 255);
+                    fill_ellipse(c, BX(-2.0f), BY(-5.1f), 0.9f * k, 0.9f * k, 0x6e4a24, 255); }
+        break;
+    case LK_URCHIN:
+        if (back) for (int i = 0; i < 7; i++) {                         /* spines along its back */
+            float a = 3.14159f * (0.15f + 0.7f * i / 6.0f), r0 = 5.5f, r1 = 9.5f + (i & 1);
+            for (float r = r0; r <= r1; r += 0.5f) px_blend(c, (int)BX(-cosf(a) * r * 1.2f), (int)BY(-sinf(a) * r), 0x5e2a80, 255); }
+        break;
+    }
+    #undef BX
+    #undef BY
+}
+static void draw_baby(ctx_t *c, const tank_t *t, const baby_t *b) {
+    float g = b->age_s / BABY_GROW_S; if (g > 1) g = 1;
+    float k = 0.85f + 0.65f * g;                                      /* 0.85 .. 1.5: about 15 .. 27 px long */
+    int f = b->facing < 0 ? -1 : 1;
+    float x = b->x, y = b->y + 1.0f * sinf(b->phase * 0.5f);
+    if (b->happy > 0) { y -= 2.5f * fabsf(sinf(b->happy * 6)); }       /* a happy bounce */
+    uint32_t fin_a = b->ka == LK_FISH ? mix(b->ca, 0xffffff, 0.25f) : b->ca, fin_b = b->kb == LK_FISH ? mix(b->cb, 0xffffff, 0.25f) : b->cb;
+    baby_mark(c, b->ka, true, x, y, k, f, b->phase, b->ca, fin_a);
+    baby_mark(c, b->kb, true, x, y, k, f, b->phase, b->cb, fin_b);
+    fill_ellipse(c, x, y, 9.0f * k + 1, 6.5f * k + 1, 0x2a1a14, 255);  /* the rim */
+    fill_ellipse(c, x, y, 9.0f * k, 6.5f * k, b->ca, 255);
+    fill_ellipse(c, x + f * 0.5f * k, y + 2.6f * k, 7.0f * k, 3.4f * k, b->cb, 255);   /* the belly: the other parent's */
+    fill_ellipse(c, x - f * 2.0f * k, y - 3.2f * k, 3.8f * k, 1.4f * k, mix(b->ca, 0xffffff, 0.4f), 200);
+    baby_mark(c, b->ka, false, x, y, k, f, b->phase, b->ca, fin_a);
+    baby_mark(c, b->kb, false, x, y, k, f, b->phase, b->cb, fin_b);
+    float ex = x + f * 4.8f * k, ey = y - 1.6f * k;                  /* the eye */
+    if (t->night && fabsf(b->vy) < 2 && b->y > TANK_BOT - 30) fill_ellipse(c, ex, ey + 0.5f, 1.6f * k, 0.5f, 0x1a1208, 255);   /* asleep */
+    else { fill_ellipse(c, ex, ey, 1.7f * k, 1.7f * k, 0xffffff, 255); fill_ellipse(c, ex + f * 0.5f, ey + 0.3f, 1.0f * k, 1.0f * k, 0x1a1208, 255); }
+    if (b->happy > 0) {                                               /* a tap: hearts and its name */
+        char nm[24]; tank_baby_name(b, nm, sizeof nm);
+        int w = text_w(nm, 1), a = b->happy > 0.6f ? 255 : (int)(255 * b->happy / 0.6f);
+        (void)a;
+        draw_text(c, (int)x - w / 2, (int)(y - 9 * k) - 20, 1, 0xffffff, nm);
+        baby_heart(c, (int)(x + f * 6 * k), (int)(y - 9 * k - 8 - (3 - b->happy) * 6), 230);
+    }
+}
+static void draw_love(ctx_t *c, const tank_t *t) {
+    for (int p = 0; p < LOVE_PAIRS; p++) {
+        const love_pair_t *L = &t->love[p];
+        float ax, ay, bx, by;
+        if (!L->a.kind || !tank_love_pos(t, L->a, &ax, &ay) || !tank_love_pos(t, L->b, &bx, &by)) continue;
+        float d = tank_dist(ax, ay, bx, by);
+        bool close = L->visit_s > 0 && d < LOVE_NEAR + (L->a.kind == LK_DOG ? GH_HALF_W + 10 : 0);
+        int n = L->burst > 0 ? 6 : close ? 2 : 0;
+        float mx = (ax + bx) * 0.5f, my = fminf(ay, by) - 8;
+        for (int k = 0; k < n; k++) {                                 /* hearts rising from between them */
+            float u = fmodf(t->clock * 0.45f + k / (float)n, 1.0f);
+            float hx = mx + (n > 2 ? 22 * cosf(k * 1.047f + t->clock) : (k ? 7 : -7)) + 4 * sinf(u * 9 + k);
+            float hy = my - u * 30;
+            int a = (int)(255 * (u < 0.6f ? 1 : (1 - u) / 0.4f));
+            baby_heart(c, (int)hx - 3, (int)hy - 3, a);
+        }
+    }
+}
 /* the RUBBER DUCK (the ball's first step): a yellow duck, beak to its way */
 static void draw_duck(ctx_t *c, float bx, float by, int f) {
     for (int y = (int)by - 10; y <= (int)by + 8; y++) {
@@ -4412,7 +4510,7 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
     g_dirty_hold = false;                          /* the tank draws in the frame's coordinates: its marks count */
     if (cached) memset(g_dirty, 0, TANK_H * DIRTY_WORDS_PER_ROW * sizeof(uint32_t));
     if (g_touched) memset(g_touched, 0, TANK_H * DIRTY_WORDS_PER_ROW * sizeof(uint32_t));   /* this frame's marks begin here */
-    struct { short x0, y0, x1, y1; } rects[9 + MAX_FOOD + MAX_BUBBLE + N_FISH_MAX + VEG_BEDS_MAX + SHRIMP_MAX];
+    struct { short x0, y0, x1, y1; } rects[9 + 2 * LOVE_PAIRS + BABY_MAX + MAX_FOOD + MAX_BUBBLE + N_FISH_MAX + VEG_BEDS_MAX + SHRIMP_MAX];
     int nr = 0;
 #define DYN_RECT(cx0, cy0, cx1, cy1) do { if (cached && nr < (int)(sizeof rects / sizeof rects[0])) { \
         rects[nr].x0 = (short)(cx0); rects[nr].y0 = (short)(cy0); \
@@ -4669,6 +4767,19 @@ void render_tank(const tank_t *t, uint16_t *fb, int stride) {
         DYN_RECT(gx0, gy0, gx1, gy1);
     }
     if (ball_up && t->ball_state == BALL_CARRIED) draw_ball(&c, t);  /* in its mouth: in front */
+    for (int i = 0; i < BABY_MAX; i++) {                              /* the babies of love across the species */
+        const baby_t *b = &t->baby[i];
+        if (!b->alive || b->x <= 0) continue;
+        draw_baby(&c, t, b);
+        DYN_RECT((int)b->x - 30, (int)b->y - 48, (int)b->x + 30, (int)b->y + 16);
+    }
+    draw_love(&c, t);
+    for (int p = 0; p < LOVE_PAIRS; p++) {
+        float ax, ay, bx, by;
+        if (!t->love[p].a.kind || !tank_love_pos(t, t->love[p].a, &ax, &ay) || !tank_love_pos(t, t->love[p].b, &bx, &by)) continue;
+        float mx = (ax + bx) * 0.5f, my = fminf(ay, by) - 8;
+        DYN_RECT((int)mx - 36, (int)my - 42, (int)mx + 36, (int)my + 8);
+    }
     if (ball_up) DYN_RECT((int)t->ball_x - 10, (int)t->ball_y - 10, (int)t->ball_x + 10, (int)t->ball_y + 10);
     PROF_ADD(8, p0);                                 /* the snail, the urchin and the crab */
     /* the pieces IN FRONT back over the fish (and the snail, the food, the

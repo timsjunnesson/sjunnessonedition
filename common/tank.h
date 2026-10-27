@@ -384,6 +384,46 @@ typedef struct {
 } shrimp_t;
 typedef struct { float x, y, vy, wobble; bool column; } bubble_t;
 
+/* ---- love across the species (the greyhound mod) ----
+ * Now and then two animals of different kinds fall in love: the greyhound
+ * or a fish (the ones that swim about) with any other kind - a fish, the
+ * dog, the seahorse, the crab, the snail, the urchin. Fish with fish court
+ * already (tank.c's courtship), so a pair is always two kinds. The swimmer
+ * (a) visits its love (b) every minute or two and they stay close a while,
+ * hearts rising between them; after a while in love they have a baby - a
+ * blend of the two (its body the colour of one, its belly the other's, and
+ * each parent's marks: ears, fins, claws, a shell ...), named for both
+ * (DOGFISH, CRABHOUND). Babies paddle about, grow over days, sleep on the
+ * sand at night; a tap: a wiggle, hearts, its name. */
+enum { LK_NONE = 0, LK_FISH, LK_DOG, LK_SEAHORSE, LK_CRAB, LK_SNAIL, LK_URCHIN, LK_KINDS };
+typedef struct { uint8_t kind, idx; uint32_t hash; } love_who_t;   /* idx: a fish's index; hash: its name's (a renamed or gone fish ends the love) */
+#define LOVE_PAIRS     2
+#define BABY_MAX       4
+typedef struct {
+    love_who_t a, b;            /* a: the swimmer who visits; kind LK_NONE = no pair */
+    float love_s;               /* s in love (awake) */
+    float baby_in;              /* s to its next baby (it comes at a visit) */
+    float visit_in, visit_s;    /* s to the next visit / s left of this one (not saved) */
+    float burst;                /* s left of the hearts at a falling in love or a birth (not saved) */
+} love_pair_t;
+typedef struct {
+    bool  alive;
+    uint8_t ka, kb;             /* its parents' kinds: a's marks first, the name a's then b's */
+    uint32_t ca, cb;            /* its body (a's colour) and belly (b's) */
+    float age_s;                /* it grows over BABY_GROW_S */
+    float x, y, vx, vy, tx, ty, phase, happy, rest;   /* the moment (not saved; x <= 0 = place it) */
+    int8_t facing;
+} baby_t;
+#define LOVE_FIRST_S      900.0f    /* awake s before the first love */
+#define LOVE_EVERY_LO_S   1800.0f   /* ... and between the next ones */
+#define LOVE_EVERY_HI_S   5400.0f
+#define LOVE_VISIT_S      22.0f
+#define LOVE_VISIT_LO_S   45.0f
+#define LOVE_VISIT_HI_S   120.0f
+#define LOVE_NEAR         60.0f     /* close enough for hearts (and a birth) */
+#define LOVE_BABY_FIRST_S 7200.0f   /* two hours in love: the first baby */
+#define LOVE_BABY_AGAIN_S 86400.0f  /* a day for each one after */
+#define BABY_GROW_S       (3 * 86400.0f)
 typedef struct tank {
     fish_t   fish[N_FISH_MAX];
     int      n_fish;               /* live fish = fish[0..n_fish-1] */
@@ -669,6 +709,10 @@ typedef struct tank {
     uint8_t  up_dog, up_ball;
     int16_t  fine_left;            /* FINE FOOD pellets: the keeper's next pellets are golden */
     int16_t  treats_left;          /* DOG TREATS: a pat gives one */
+    /* love across the species and the babies (love_types above) */
+    love_pair_t love[LOVE_PAIRS];
+    baby_t   baby[BABY_MAX];
+    float    love_check_in;        /* awake s to the next chance of love */
     /* where the keeper put the decor (2026-09-16, the placement page): the
      * sword plant's centre x along the floor (<= 0 = the default spot) and
      * its depth layer (DECOR_Z_*). Both saved. */
@@ -1427,5 +1471,18 @@ void  tank_ball_throw(tank_t *t, float x, float y); /* a tap on the ball: flung 
 #define GH_LOOP_S      1.3f        /* the LOOP TRICK */
 #define FINE_SHINE_S   600.0f      /* a golden pellet's sparkle on the fish that ate it */
 #define FINE_TRUST     0.25f       /* ... and the trust it adds, over a plain pellet's */
+/* love across the species (love_types above) */
+bool  tank_love_pos(const tank_t *t, love_who_t w, float *x, float *y);   /* false: not in the tank (the love ends) */
+bool  tank_love_visit_target(const tank_t *t, int kind, int idx, float *x, float *y);   /* a swimmer on a visit: where to go */
+bool  tank_love_visited(const tank_t *t, int kind, int idx);   /* this one is being visited now (it waits) */
+uint32_t tank_love_hash(const tank_t *t, int kind, int idx);
+const char *tank_love_name(const tank_t *t, love_who_t w);     /* ZORRO, BUBBLES, THE CRAB ... */
+bool  tank_love_fall(tank_t *t, love_who_t a, love_who_t b);   /* a pair now (false: not a fit) */
+int   tank_baby_count(const tank_t *t);
+void  tank_baby_born(tank_t *t, int pair);                     /* a baby for pair at its meeting place */
+void  tank_baby_name(const baby_t *b, char *out, int n);       /* DOGFISH */
+uint32_t tank_love_rgb(const tank_t *t, love_who_t w);
+int   tank_baby_hit(const tank_t *t, float x, float y);        /* its index, -1 = none */
+void  tank_baby_tap(tank_t *t, int i);
 
 #endif

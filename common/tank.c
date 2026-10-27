@@ -4,6 +4,7 @@
 #include "tank.h"
 #include "tank_events.h"
 #include <math.h>
+#include <stdio.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -416,6 +417,7 @@ void tank_init(tank_t *t, uint32_t seed) {
     t->gh_s = 0; t->gh_pets = 0; t->gh_fetches = 0; t->gh_name = 0; t->gh_happy = 0; t->gh_sleep = false; t->gh_breath = 0;
     t->ball_x = -1; t->ball_y = 0; t->ball_vx = t->ball_vy = 0; t->ball_spin = 0; t->ball_state = BALL_FLOAT; t->gh_play_in = 90;
     t->gh_happy_len = GH_PET_S; t->gh_treat = 0; t->gh_loop = 0; t->up_dog = 0; t->up_ball = 0; t->fine_left = 0; t->treats_left = 0;
+    memset(t->love, 0, sizeof t->love); memset(t->baby, 0, sizeof t->baby); t->love_check_in = LOVE_FIRST_S;
     t->sh_x = -1; t->sh_y = 0; t->sh_bed = t->sh_frond = -1; t->sh_mode = SH_DRIFT; t->sh_facing = 1;
     t->sh_akind = SH_ANCHOR_NONE; t->sh_aitem = -1; t->sh_ax = t->sh_ay = t->sh_ahw = t->sh_aref = 0; t->sh_front = false;
     t->sh_hitched = t->sh_credited = false; t->sh_tx = t->sh_ty = 0; t->sh_stay = 0; t->sh_look = 0; t->sh_vx = t->sh_vy = 0;
@@ -1777,6 +1779,7 @@ const char *tank_greyhound_doing(const tank_t *t) {
     if (t->gh_sleep) return "ASLEEP";
     if (t->ball_state == BALL_CARRIED) return "BRINGING THE BALL";
     if (t->ball_state == BALL_THROWN) return "AFTER THE BALL";
+    { float x, y; if (tank_love_visit_target(t, LK_DOG, 0, &x, &y) || tank_love_visited(t, LK_DOG, 0)) return "WITH ITS LOVE"; }
     if (finger) return "AT YOUR FINGER";
     if (t->night) return "GOING TO BED";
     if (t->gh_zoom > 0) return "DOING ZOOMIES";
@@ -1858,6 +1861,10 @@ static void greyhound_tick(tank_t *t, float dt) {
             t->ball_state = BALL_FLOAT; t->ball_vx = t->gh_facing * 25.0f; t->ball_vy = -20.0f;
             t->gh_fetches++; t->gh_happy = 2.5f; t->gh_rest = 2.0f;
         }
+    } else if (!finger && t->gh_happy <= 0 && tank_love_visit_target(t, LK_DOG, 0, &t->gh_tx, &t->gh_ty)) {   /* visiting its love */
+        t->gh_sleep = false; t->gh_zoom = 0; t->gh_rest = 0;
+        t->gh_ty = clampf(t->gh_ty, gh_top(), gh_bed_y());
+        want = tank_dist(t->gh_x, t->gh_y, t->gh_tx, t->gh_ty) > 3 ? cruise * 1.3f : 0;
     } else if (finger) {
         t->gh_sleep = false; t->gh_zoom = 0; t->gh_rest = 0;
         t->gh_tx = t->hold_x - (t->hold_x > t->gh_x ? 1 : -1) * (GH_HALF_W - 4);   /* its nose at the fingertip */
@@ -1872,6 +1879,7 @@ static void greyhound_tick(tank_t *t, float dt) {
         if (!t->gh_sleep) want = cruise;
     } else {
         if (t->gh_sleep || t->gh_ty > gh_bottom() + 1) { t->gh_rest = 0; gh_pick(t, false); }   /* morning: up off the sand, straight away */
+        if (tank_love_visited(t, LK_DOG, 0)) { t->gh_rest = fmaxf(t->gh_rest, 0.5f); t->gh_zoom = 0; }   /* its love is visiting: it waits, treading water */
         t->gh_sleep = false;
         if (t->gh_zoom > 0) {
             t->gh_zoom -= dt;
@@ -1913,6 +1921,214 @@ static void greyhound_tick(tank_t *t, float dt) {
     if (ball && t->ball_state == BALL_CARRIED) {                    /* in its mouth */
         t->ball_x = t->gh_x + t->gh_facing * (GH_NOSE_DX - 1); t->ball_y = t->gh_y - GH_NOSE_DY + 4;
     }
+}
+/* ---- love across the species (the greyhound mod; tank.h has the story) ---- */
+static uint32_t love_fnv(const char *s, uint32_t h) { while (*s) { h ^= (uint8_t)*s++; h *= 16777619u; } return h; }
+uint32_t tank_love_hash(const tank_t *t, int kind, int idx) {
+    if (kind != LK_FISH || idx < 0 || idx >= t->n_fish) return 0;
+    return love_fnv(t->fish[idx].name, 2166136261u ^ (uint32_t)t->fish[idx].preset) | 1u;
+}
+bool tank_love_pos(const tank_t *t, love_who_t w, float *x, float *y) {
+    switch (w.kind) {
+    case LK_FISH:
+        if (w.idx >= t->n_fish || tank_love_hash(t, LK_FISH, w.idx) != w.hash) return false;
+        *x = t->fish[w.idx].x; *y = t->fish[w.idx].y; return true;
+    case LK_DOG:
+        if (!(t->sd_unlocks & SD_ITEM_GREYHOUND) || t->gh_x <= 0) return false;
+        *x = t->gh_x; *y = t->gh_y; return true;
+    case LK_SEAHORSE:
+        if (!(t->sd_unlocks & SD_ITEM_SEAHORSE) || t->sh_x <= 0) return false;
+        *x = t->sh_x; *y = t->sh_y; return true;
+    case LK_CRAB:
+        if (!(t->sd_unlocks & SD_ITEM_CRAB) || t->cr_x <= 0) return false;
+        *x = t->cr_x; *y = CR_FLOOR_Y - t->cr_y - 8; return true;
+    case LK_SNAIL:
+        if (!(t->sd_unlocks & SD_ITEM_SNAIL) || t->snail_x <= 0) return false;
+        *x = t->snail_x; *y = t->snail_y; return true;
+    case LK_URCHIN:
+        if (!(t->sd_unlocks & SD_ITEM_URCHIN) || t->urchin_x <= 0) return false;
+        *x = t->urchin_x; *y = URCHIN_FLOOR_Y - 6; return true;
+    }
+    return false;
+}
+static bool love_floor_kind(int k) { return k == LK_CRAB || k == LK_SNAIL || k == LK_URCHIN; }
+static bool love_same(love_who_t a, love_who_t b) { return a.kind == b.kind && (a.kind != LK_FISH || a.idx == b.idx); }
+static bool love_taken(const tank_t *t, love_who_t w) {
+    for (int p = 0; p < LOVE_PAIRS; p++)
+        if (t->love[p].a.kind && (love_same(t->love[p].a, w) || love_same(t->love[p].b, w))) return true;
+    return false;
+}
+const char *tank_love_name(const tank_t *t, love_who_t w) {
+    switch (w.kind) {
+    case LK_FISH: return w.idx < t->n_fish ? t->fish[w.idx].name : "A FISH";
+    case LK_DOG: return tank_greyhound_name(t);
+    case LK_SEAHORSE: return "THE SEAHORSE";
+    case LK_CRAB: return "THE CRAB";
+    case LK_SNAIL: return "THE SNAIL";
+    case LK_URCHIN: return "THE URCHIN";
+    }
+    return "?";
+}
+uint32_t tank_love_rgb(const tank_t *t, love_who_t w) {
+    switch (w.kind) {
+    case LK_FISH: return w.idx < t->n_fish ? t->fish[w.idx].color : 0xff8a3a;
+    case LK_DOG: return 0xc8915a;
+    case LK_SEAHORSE: return 0xf2a33a;
+    case LK_CRAB: return 0xe0414a;
+    case LK_SNAIL: return 0xb07a44;
+    case LK_URCHIN: return 0x8a4fb4;
+    }
+    return 0xffffff;
+}
+bool tank_love_fall(tank_t *t, love_who_t a, love_who_t b) {
+    float x, y;
+    if (a.kind != LK_FISH && a.kind != LK_DOG) return false;          /* the visitor swims */
+    if (a.kind == b.kind || love_taken(t, a) || love_taken(t, b)) return false;   /* two kinds, both free */
+    if (!tank_love_pos(t, a, &x, &y) || !tank_love_pos(t, b, &x, &y)) return false;
+    for (int p = 0; p < LOVE_PAIRS; p++) {
+        love_pair_t *L = &t->love[p];
+        if (L->a.kind) continue;
+        memset(L, 0, sizeof *L);
+        L->a = a; L->b = b; L->love_s = 0; L->baby_in = LOVE_BABY_FIRST_S;
+        L->visit_in = 2.0f; L->visit_s = 0; L->burst = 4.0f;
+        return true;
+    }
+    return false;
+}
+int tank_baby_count(const tank_t *t) { int n = 0; for (int i = 0; i < BABY_MAX; i++) n += t->baby[i].alive; return n; }
+static const char *const LK_HEAD[LK_KINDS] = { "", "FISH", "DOG", "SEA", "CRAB", "SNAIL", "URCH" };
+static const char *const LK_TAIL[LK_KINDS] = { "", "FISH", "HOUND", "HORSE", "CRAB", "SNAIL", "URCHIN" };
+void tank_baby_name(const baby_t *b, char *out, int n) {
+    snprintf(out, n, "%s%s", LK_HEAD[b->ka < LK_KINDS ? b->ka : 0], LK_TAIL[b->kb < LK_KINDS ? b->kb : 0]);
+}
+void tank_baby_born(tank_t *t, int pair) {
+    love_pair_t *L = &t->love[pair];
+    float ax, ay, bx, by;
+    if (!L->a.kind || !tank_love_pos(t, L->a, &ax, &ay) || !tank_love_pos(t, L->b, &bx, &by)) return;
+    for (int i = 0; i < BABY_MAX; i++) {
+        baby_t *b = &t->baby[i];
+        if (b->alive) continue;
+        memset(b, 0, sizeof *b);
+        b->alive = true; b->ka = L->a.kind; b->kb = L->b.kind;
+        b->ca = tank_love_rgb(t, L->a); b->cb = tank_love_rgb(t, L->b);
+        b->x = (ax + bx) * 0.5f; b->y = fminf((ay + by) * 0.5f, TANK_BOT - 40.0f);
+        b->tx = b->x; b->ty = b->y - 20; b->rest = 2; b->happy = 4; b->facing = 1;
+        L->burst = 4.0f;
+        return;
+    }
+}
+int tank_baby_hit(const tank_t *t, float x, float y) {
+    for (int i = 0; i < BABY_MAX; i++) {
+        const baby_t *b = &t->baby[i];
+        if (b->alive && b->x > 0 && tank_dist(x, y, b->x, b->y) < 18) return i;
+    }
+    return -1;
+}
+void tank_baby_tap(tank_t *t, int i) { if (i >= 0 && i < BABY_MAX && t->baby[i].alive) t->baby[i].happy = 3.0f; }
+/* where a visiting swimmer goes: beside its love (above it, for one on the sand) */
+bool tank_love_visit_target(const tank_t *t, int kind, int idx, float *x, float *y) {
+    if (t->night) return false;
+    for (int p = 0; p < LOVE_PAIRS; p++) {
+        const love_pair_t *L = &t->love[p];
+        if (!L->a.kind || L->visit_s <= 0 || L->a.kind != kind || (kind == LK_FISH && L->a.idx != idx)) continue;
+        float ax, ay, bx, by;
+        if (!tank_love_pos(t, L->a, &ax, &ay) || !tank_love_pos(t, L->b, &bx, &by)) return false;
+        float side = ax < bx ? -1.0f : 1.0f;                          /* stay on the side it came from */
+        float gap = kind == LK_DOG ? GH_HALF_W + 14 : 34;              /* beside it, never on top of it */
+        *x = bx + side * gap; *y = love_floor_kind(L->b.kind) ? by - 30 : by;
+        if (kind == LK_DOG && love_floor_kind(L->b.kind)) *y = by - 6;
+        return true;
+    }
+    return false;
+}
+bool tank_love_visited(const tank_t *t, int kind, int idx) {
+    if (t->night) return false;
+    for (int p = 0; p < LOVE_PAIRS; p++) {
+        const love_pair_t *L = &t->love[p];
+        if (L->a.kind && L->visit_s > 0 && L->b.kind == kind && (kind != LK_FISH || L->b.idx == idx)) return true;
+    }
+    return false;
+}
+static void love_try(tank_t *t) {                                    /* a chance of love: a free swimmer and a free one of another kind */
+    love_who_t cand[N_FISH_MAX + 6]; int n = 0;
+    love_who_t w = { 0 };
+    if ((t->sd_unlocks & SD_ITEM_GREYHOUND) && t->gh_x > 0) { w.kind = LK_DOG; w.idx = 0; w.hash = 0; cand[n++] = w; }
+    for (int i = 0; i < t->n_fish && n < N_FISH_MAX + 6; i++) { w.kind = LK_FISH; w.idx = (uint8_t)i; w.hash = tank_love_hash(t, LK_FISH, i); cand[n++] = w; }
+    int nv = n;                                                         /* the swimmers are cand[0..nv) */
+    static const int RES[4] = { LK_SEAHORSE, LK_CRAB, LK_SNAIL, LK_URCHIN };
+    float x, y;
+    for (int r = 0; r < 4; r++) { w.kind = (uint8_t)RES[r]; w.idx = 0; w.hash = 0; if (tank_love_pos(t, w, &x, &y)) cand[n++] = w; }
+    for (int tries = 0; tries < 24; tries++) {
+        int a = (int)tank_randf(t, 0, nv - 0.001f), b = (int)tank_randf(t, 0, n - 0.001f);
+        if (nv <= 0 || a == b) continue;
+        if (tank_love_fall(t, cand[a], cand[b])) return;
+    }
+}
+static void baby_tick(tank_t *t, baby_t *b, float dt) {
+    if (b->x <= 0) { rand_water(t, 30, 80, TANK_BOT - 60, &b->x, &b->y); b->tx = b->x; b->ty = b->y; b->facing = 1; }
+    b->age_s += dt;
+    if (b->happy > 0) b->happy -= dt;
+    float want = 0, bed = TANK_BOT - 26;
+    if (t->night) { b->tx = b->x; b->ty = bed; want = 12; }          /* asleep on the sand */
+    else {
+        float d = tank_dist(b->x, b->y, b->tx, b->ty);
+        if (b->rest > 0) b->rest -= dt;
+        else if (d > 3) want = 20 + 8 * sinf(b->phase * 0.3f);
+        else {                                                         /* a new spot - often near a parent */
+            b->rest = tank_randf(t, 1, 4);
+            love_who_t par = { b->ka, 0, 0 };
+            float px, py; bool near = false;
+            for (int p = 0; p < LOVE_PAIRS && !near; p++)
+                if (t->love[p].a.kind == b->ka && t->love[p].b.kind == b->kb && tank_love_pos(t, t->love[p].a, &px, &py)) near = true;
+            (void)par;
+            if (near && tank_randf(t, 0, 1) < 0.5f) { b->tx = px + tank_randf(t, -40, 40); b->ty = clampf(py + tank_randf(t, -25, 25), 60, TANK_BOT - 50); }
+            else rand_water(t, 30, 60, TANK_BOT - 50, &b->tx, &b->ty);
+        }
+    }
+    float dx = b->tx - b->x, dy = b->ty - b->y, d = sqrtf(dx * dx + dy * dy);
+    if (want > 0 && d > 0.5f) {
+        float s = d < 20 ? 0.4f + 0.6f * d / 20 : 1, k = fminf(1, dt * 1.5f);
+        b->vx += (dx / d * want * s - b->vx) * k; b->vy += (dy / d * want * s - b->vy) * k;
+    } else { float k = fminf(1, dt * 1.5f); b->vx -= b->vx * k; b->vy -= b->vy * k; }
+    b->x += b->vx * dt; b->y += b->vy * dt;
+    b->y = clampf(b->y, 40, bed);
+    float lo = tank_glass_x0(b->y) + 16, hi = tank_glass_x1(b->y) - 16;
+    if (lo < hi) b->x = clampf(b->x, lo, hi);
+    if (b->vx > 3) b->facing = 1; else if (b->vx < -3) b->facing = -1;
+    if (!(t->night && d < 3)) b->phase += dt * (4 + fabsf(b->vx) * 0.1f + (b->happy > 0 ? 8 : 0));
+    if (b->phase > 1000 * TAU) b->phase -= 1000 * TAU;
+}
+static void love_tick(tank_t *t, float dt) {
+    for (int p = 0; p < LOVE_PAIRS; p++) {
+        love_pair_t *L = &t->love[p];
+        if (!L->a.kind) continue;
+        float ax, ay, bx, by;
+        if (!tank_love_pos(t, L->a, &ax, &ay) || !tank_love_pos(t, L->b, &bx, &by)) {
+            if (L->a.kind == LK_DOG || L->a.kind == LK_FISH) {          /* gone (sold, renamed, passed): the love ends */
+                bool gone = (L->a.kind == LK_FISH && (L->a.idx >= t->n_fish || tank_love_hash(t, LK_FISH, L->a.idx) != L->a.hash))
+                         || (L->b.kind == LK_FISH && (L->b.idx >= t->n_fish || tank_love_hash(t, LK_FISH, L->b.idx) != L->b.hash))
+                         || (L->a.kind == LK_DOG && !(t->sd_unlocks & SD_ITEM_GREYHOUND)) || (L->b.kind == LK_DOG && !(t->sd_unlocks & SD_ITEM_GREYHOUND))
+                         || (L->b.kind == LK_SEAHORSE && !(t->sd_unlocks & SD_ITEM_SEAHORSE)) || (L->b.kind == LK_CRAB && !(t->sd_unlocks & SD_ITEM_CRAB))
+                         || (L->b.kind == LK_SNAIL && !(t->sd_unlocks & SD_ITEM_SNAIL)) || (L->b.kind == LK_URCHIN && !(t->sd_unlocks & SD_ITEM_URCHIN));
+                if (gone) memset(L, 0, sizeof *L);
+            }
+            continue;                                                  /* (not placed yet this boot: wait) */
+        }
+        L->love_s += dt;
+        if (L->burst > 0) L->burst -= dt;
+        if (t->night) { L->visit_s = 0; continue; }
+        if (L->visit_s > 0) L->visit_s -= dt;
+        else if ((L->visit_in -= dt) <= 0) { L->visit_s = LOVE_VISIT_S; L->visit_in = tank_randf(t, LOVE_VISIT_LO_S, LOVE_VISIT_HI_S); }
+        if (L->baby_in > 0) L->baby_in -= dt;
+        if (L->baby_in <= 0 && L->visit_s > 0 && tank_dist(ax, ay, bx, by) < LOVE_NEAR + (L->a.kind == LK_DOG ? GH_HALF_W : 0) && tank_baby_count(t) < BABY_MAX) {
+            tank_baby_born(t, p); L->baby_in = LOVE_BABY_AGAIN_S;
+        }
+    }
+    if (!t->night && (t->sd_unlocks & SD_ITEM_GREYHOUND) && (t->love_check_in -= dt) <= 0) {   /* (love comes with the mod's dog: a tank without it is upstream's, untouched) */
+        t->love_check_in = tank_randf(t, LOVE_EVERY_LO_S, LOVE_EVERY_HI_S);
+        love_try(t);
+    }
+    for (int i = 0; i < BABY_MAX; i++) if (t->baby[i].alive) baby_tick(t, &t->baby[i], dt);
 }
 /* ---- the seahorse (0.3.6, SD_ITEM_SEAHORSE; tank.h has the story) ----
  * Three things it does. PERCH: its tail round an ANCHOR (tank.h: a blade, a
@@ -2943,7 +3159,8 @@ void tank_tick_sleep(tank_t *t, float seconds) {
     coral_grow(t, seconds);
     cluster_grow(t, seconds);
     shrimp_sleep(t, seconds);
-    if (t->sd_unlocks & SD_ITEM_GREYHOUND) t->gh_s += seconds;   /* the greyhound's days run through the night too */
+    if (t->sd_unlocks & SD_ITEM_GREYHOUND) t->gh_s += seconds;
+    for (int i = 0; i < BABY_MAX; i++) if (t->baby[i].alive) t->baby[i].age_s += seconds;   /* the babies grow while you are away */   /* the greyhound's days run through the night too */
     if (t->sd_unlocks & SD_ITEM_SEAHORSE) { t->sh_s += seconds; t->sh_snack_cool = fmaxf(0, t->sh_snack_cool - seconds); }   /* days with the keeper run through the night */
     if (t->sd_unlocks & SD_ITEM_CRAB) t->cr_full = fmaxf(0, t->cr_full - seconds);   /* hungry again by the morning */
     if (t->sd_unlocks & SD_ITEM_CRAB) {                 /* the crab's next find: its wait runs asleep too; one held up when the tank slept is due again at the wake */
@@ -3388,6 +3605,15 @@ static void update_fish(tank_t *t, int idx, float dt) {
         }
     }
 
+    /* love across the species: a fish on a visit swims to its love and stays
+     * close; a fish being visited by its love dawdles */
+    { float lx, ly;
+      if (!dodging && f->goal.id != GOAL_FLEE_SHADOW && f->hunger < 7.5f && tank_love_visit_target(t, LK_FISH, idx, &lx, &ly)) {
+          float ldx = lx - f->x, ldy = ly - f->y, ld = sqrtf(ldx * ldx + ldy * ldy);
+          if (ld > 8) { desired = atan2f(ldy, ldx); touch_speed = fmaxf(touch_speed, ld > 50 ? 48 : 22); }
+          else touch_speed = fmaxf(touch_speed, 6);
+      } }
+
     /* separation - personal space. Fish are ~40 px long; the old 16 px
      * radius let four content fish stack on one landmark like a pile of
      * cards (2026-09-01). Now a body length, weighted by how close they are;
@@ -3596,6 +3822,7 @@ void tank_tick(tank_t *t, float dt, advisor_fn advise) {
     crab_tick(t, dt);
     seahorse_tick(t, dt);
     greyhound_tick(t, dt);
+    love_tick(t, dt);
     for (int i = 0; i < t->n_fish; i++) if (t->fish[i].shine > 0) t->fish[i].shine -= dt;   /* FINE FOOD's sparkle wears off */
     shrimp_tick(t, dt);
 

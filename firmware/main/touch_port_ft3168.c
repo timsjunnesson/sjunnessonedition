@@ -659,6 +659,8 @@ void touch_port_poll(tank_t *t) {
                 goto released;
             }
             if (s_sel == RENDER_CARD_GREYHOUND && render_greyhound_card_hit(s_px, s_py)) { s_sel_us = now; goto released; }   /* on its card: it stays up */
+            { int bi = tank_baby_hit(t, s_px, s_py);   /* a baby of love across the species: a wiggle, hearts, its name */
+              if (bi >= 0) { tank_baby_tap(t, bi); ESP_LOGI(TAG, "baby %d tapped", bi); goto released; } }
             if (tank_ball_hit(t, s_px, s_py)) {   /* the ball: thrown, the greyhound fetches */
                 tank_ball_throw(t, s_px, s_py);
                 ESP_LOGI(TAG, "ball thrown at %.0f,%.0f", s_px, s_py);

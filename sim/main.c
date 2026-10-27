@@ -1149,8 +1149,8 @@ static int selftest_sleep(void) {
  * tail reading as the defaults - and again after a save and a reload. */
 #ifndef _MSC_VER
 #include <dirent.h>
-static const size_t SAVE_CUTS[] = { 448, 1112, 1304, 1408, 1432, 1440, 1456, 1480, 1608, 1616, 1624, 1640, 1656, 1664, 1672, 1680, 1688, 1880, 1896, 1904, 1912, 1920, 1928, 1936, 1944, 2336 };
-#define SAVE_NOW 2336                    /* today's sizeof(save_t): 0.3.9.1's 1940 of fields, the greyhound mod's gap, its 28-byte tail at 2304 (padded to 8) */
+static const size_t SAVE_CUTS[] = { 448, 1112, 1304, 1408, 1432, 1440, 1456, 1480, 1608, 1616, 1624, 1640, 1656, 1664, 1672, 1680, 1688, 1880, 1896, 1904, 1912, 1920, 1928, 1936, 1944, 2336, 2456 };
+#define SAVE_NOW 2456                    /* today's sizeof(save_t): 0.3.9.1's 1940 of fields, the greyhound mod's gap, its 148-byte tail at 2304 (padded to 8) */
 static uint32_t sv_u32(const uint8_t *e, size_t off) { uint32_t v; memcpy(&v, e + off, 4); return v; }
 static float    sv_f32(const uint8_t *e, size_t off) { float v; memcpy(&v, e + off, 4); return v; }
 static int name_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
@@ -6252,6 +6252,7 @@ static int selftest_shop(void) {
         if (progression_buy(&tank, 11) || tank.sd_balance != 20) { printf("FAIL: the greyhound sold twice\n"); return 1; }
         if (progression_sell(&tank, 11)) { printf("FAIL: the greyhound sold back (it is a resident)\n"); return 1; }
         if (tank.gh_x <= 0) { printf("FAIL: the greyhound is not in the water after the sale\n"); return 1; }
+        memset(tank.love, 0, sizeof tank.love); tank.love_check_in = 1e9f;   /* no love in the dog's own tests (the love test below has its own) */
         tank.night = false; tank.hold_active = false;
         float travel = 0, px0 = tank.gh_x, py0 = tank.gh_y, top_speed = 0; bool zoomed = false, left = false, right = false;
         for (int i = 0; i < 60 * 150; i++) {
@@ -6466,7 +6467,7 @@ static int selftest_shop(void) {
            over: the dog keeps its life, the volcano and the crab stay unbought */
         { static uint8_t raw[4096]; size_t n = 0;
           progression_save(&tank);
-          if (!persist_port_load(raw, sizeof raw, &n) || n != 2336) { printf("FAIL: the save is %zu bytes, want 2336\n", n); return 1; }
+          if (!persist_port_load(raw, sizeof raw, &n) || n != 2456) { printf("FAIL: the save is %zu bytes, want 2456\n", n); return 1; }
           uint32_t rel = 0x00030801u, un; memcpy(raw + 1664, &rel, 4);
           memcpy(&un, raw + 1488, 4); un &= ~(SD_ITEM_GREYHOUND | SD_ITEM_BALL | SD_ITEM_VOLCANO | SD_ITEM_CRAB); un |= (1u << 9) | (1u << 10); memcpy(raw + 1488, &un, 4);
           float gs = 3 * 86400.0f + 100; int32_t gp = 42, gf = 17; int16_t fl = 7, tl = 3;
@@ -6480,13 +6481,85 @@ static int selftest_shop(void) {
               || tank.up_dog != 2 || tank.up_ball != 1 || tank.fine_left != 7 || tank.treats_left != 3) {
               printf("FAIL: an old mod save did not move over (unlocks %x, %d pets, name %d, steps %d/%d, packs %d/%d)\n", (unsigned)tank.sd_unlocks, (int)tank.gh_pets, tank.gh_name, tank.up_dog, tank.up_ball, tank.fine_left, tank.treats_left); return 1; }
           progression_save(&tank);
-          if (!persist_port_load(raw, sizeof raw, &n) || n != 2336) { printf("FAIL: the moved save writes back at %zu\n", n); return 1; }
+          if (!persist_port_load(raw, sizeof raw, &n) || n != 2456) { printf("FAIL: the moved save writes back at %zu\n", n); return 1; }
           tank_init(&tank, 4848); progression_boot(&tank); tank.trickle_off = true;
           if (tank.gh_pets != 42 || !(tank.sd_unlocks & SD_ITEM_GREYHOUND) || (tank.sd_unlocks & SD_ITEM_VOLCANO)) { printf("FAIL: the moved save did not load back\n"); return 1; }
           printf("selftest-shop: an old mod save (0.3.8.1, 1936 B) moved over: %s, 3 days, 42 pats, steps 2/1, packs 7/3; no free volcano or crab\n", tank_greyhound_name(&tank)); }
         printf("selftest-shop: extras: dog steps 250/700/1500, ball steps 200/600, FINE FOOD (3 golden, a fish shines), a treat then zoomies, the loop, UPGRADE in the shop; kept by a save\n");
         tank.light_override = false;
 #undef EX_RUN
+    }
+    /* love across the species: a pair forms (two kinds, a swimmer first),
+       the swimmer visits (the dog to the crab, a fish to the seahorse),
+       a baby comes at a visit, named for both, paddles about, a tap wiggles
+       it; all of it kept by a save; a renamed fish ends its love */
+    {
+#define LV_RUN(sec) for (int i_ = 0; i_ < (int)((sec) * 60); i_++) { tank.light_override = true; tank.light_on = true; tank.hold_active = false; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+        static uint16_t la[TANK_W * TANK_H], lb[TANK_W * TANK_H];
+        tank.sd_unlocks |= SD_ITEM_SEAHORSE | SD_ITEM_CRAB | SD_ITEM_GREYHOUND; tank_seahorse_place(&tank); tank_crab_place(&tank);
+        memset(tank.love, 0, sizeof tank.love); memset(tank.baby, 0, sizeof tank.baby);
+        tank.gh_happy = 0; tank.gh_treat = 0; tank.ball_state = BALL_FLOAT;
+        LV_RUN(1);
+        tank.love_check_in = 0.05f; LV_RUN(0.5f);
+        if (!tank.love[0].a.kind && !tank.love[1].a.kind) { printf("FAIL: no love formed\n"); return 1; }
+        { const love_pair_t *L = tank.love[0].a.kind ? &tank.love[0] : &tank.love[1];
+          if (L->a.kind == L->b.kind || (L->a.kind != LK_DOG && L->a.kind != LK_FISH)) { printf("FAIL: a pair of kinds %d and %d\n", L->a.kind, L->b.kind); return 1; } }
+        memset(tank.love, 0, sizeof tank.love); tank.love_check_in = 99999;
+        love_who_t dog = { LK_DOG, 0, 0 }, crab = { LK_CRAB, 0, 0 }, sea = { LK_SEAHORSE, 0, 0 };
+        love_who_t f0 = { LK_FISH, 0, tank_love_hash(&tank, LK_FISH, 0) }, f1 = { LK_FISH, 1, tank_love_hash(&tank, LK_FISH, 1) };
+        if (tank_love_fall(&tank, f0, f1) || tank_love_fall(&tank, crab, dog) || tank_love_fall(&tank, dog, dog)) { printf("FAIL: a pair that should not be\n"); return 1; }
+        if (!tank_love_fall(&tank, dog, crab)) { printf("FAIL: the dog and the crab could not fall in love\n"); return 1; }
+        if (!tank_love_fall(&tank, f0, sea)) { printf("FAIL: a fish and the seahorse could not fall in love\n"); return 1; }
+        if (tank_love_fall(&tank, f1, crab)) { printf("FAIL: the crab in two loves\n"); return 1; }
+        tank.love[0].visit_in = 0.05f; tank.love[1].visit_in = 0.05f; tank.love[0].baby_in = 999999; tank.love[1].baby_in = 999999;
+        float dmin = 1e9f, fmin = 1e9f;
+        for (int i = 0; i < 60 * 20; i++) {
+            LV_RUN(1.0f / 60);
+            float ax, ay, bx, by;
+            if (tank_love_pos(&tank, dog, &ax, &ay) && tank_love_pos(&tank, crab, &bx, &by)) dmin = fminf(dmin, tank_dist(ax, ay, bx, by));
+            if (tank_love_pos(&tank, f0, &ax, &ay) && tank_love_pos(&tank, sea, &bx, &by)) fmin = fminf(fmin, tank_dist(ax, ay, bx, by));
+        }
+        if (dmin > LOVE_NEAR + GH_HALF_W || fmin > LOVE_NEAR) { printf("FAIL: no visits (the dog %.0f px from the crab, the fish %.0f from the seahorse)\n", dmin, fmin); return 1; }
+        /* a baby */
+        tank.love[1].baby_in = 0.05f; tank.love[1].visit_s = 0; tank.love[1].visit_in = 0.05f;
+        float t_baby = -1;
+        for (int i = 0; i < 60 * 40 && t_baby < 0; i++) { LV_RUN(1.0f / 60); if (tank_baby_count(&tank)) t_baby = i / 60.0f; }
+        if (t_baby < 0) { printf("FAIL: no baby\n"); return 1; }
+        char nm[24]; tank_baby_name(&tank.baby[0], nm, sizeof nm);
+        if (strcmp(nm, "FISHHORSE") || tank.baby[0].ka != LK_FISH || tank.baby[0].kb != LK_SEAHORSE) { printf("FAIL: the baby is %s\n", nm); return 1; }
+        float bx0 = tank.baby[0].x, by0 = tank.baby[0].y, btravel = 0;
+        for (int i = 0; i < 60 * 30; i++) { LV_RUN(1.0f / 60); btravel += tank_dist(bx0, by0, tank.baby[0].x, tank.baby[0].y); bx0 = tank.baby[0].x; by0 = tank.baby[0].y;
+            if (tank.baby[0].y < 30 || tank.baby[0].y > TANK_BOT || tank.baby[0].x < tank_glass_x0(tank.baby[0].y) || tank.baby[0].x > tank_glass_x1(tank.baby[0].y)) { printf("FAIL: the baby left the water\n"); return 1; } }
+        if (btravel < 60) { printf("FAIL: the baby does not paddle about (%.0f px)\n", btravel); return 1; }
+        int bi = tank_baby_hit(&tank, tank.baby[0].x + 3, tank.baby[0].y - 2);
+        if (bi != 0) { printf("FAIL: the baby's hit test\n"); return 1; }
+        tank_baby_tap(&tank, bi);
+        if (tank.baby[0].happy <= 0) { printf("FAIL: a tap on the baby\n"); return 1; }
+        render_tank(&tank, la, TANK_W);
+        baby_t keepb = tank.baby[0]; tank.baby[0].alive = false;
+        render_tank(&tank, lb, TANK_W); tank.baby[0] = keepb;
+        int bpx = 0; for (int k = 0; k < TANK_W * TANK_H; k++) bpx += la[k] != lb[k];
+        if (bpx < 150) { printf("FAIL: the baby is not drawn (%d px)\n", bpx); return 1; }
+        /* a second baby later, then the save */
+        tank.love[0].baby_in = 0.05f; tank.love[0].visit_s = 0; tank.love[0].visit_in = 0.05f;
+        for (int i = 0; i < 60 * 40 && tank_baby_count(&tank) < 2; i++) LV_RUN(1.0f / 60);
+        if (tank_baby_count(&tank) < 2) { printf("FAIL: the dog and the crab had no baby\n"); return 1; }
+        char nm2[24]; for (int i = 0; i < BABY_MAX; i++) if (tank.baby[i].alive && tank.baby[i].ka == LK_DOG) tank_baby_name(&tank.baby[i], nm2, sizeof nm2);
+        float age0 = tank.baby[0].age_s;
+        progression_save(&tank);
+        tank_init(&tank, 4949); progression_boot(&tank); tank.trickle_off = true;
+        if (tank.love[0].a.kind != LK_DOG || tank.love[0].b.kind != LK_CRAB || tank.love[1].a.kind != LK_FISH || tank.love[1].b.kind != LK_SEAHORSE
+            || tank_baby_count(&tank) != 2 || fabsf(tank.baby[0].age_s - age0) > 1 || tank.baby[0].ka != LK_FISH) { printf("FAIL: the save lost the loves or the babies\n"); return 1; }
+        LV_RUN(1);
+        if (!tank.love[1].a.kind || tank.baby[0].x <= 0) { printf("FAIL: the loves or the babies are not back after a load\n"); return 1; }
+        /* a renamed fish: its love ends (the babies stay) */
+        snprintf(tank.fish[0].name, sizeof tank.fish[0].name, "RENAMED");
+        LV_RUN(0.2f);
+        if (tank.love[1].a.kind || tank_baby_count(&tank) != 2) { printf("FAIL: a renamed fish's love did not end\n"); return 1; }
+        printf("selftest-shop: love: a pair of two kinds formed; the dog visited the crab (%.0f px), a fish the seahorse (%.0f px); %s born in %.1f s, then %s; a tap; kept by a save; a renamed fish's love ended\n",
+               dmin, fmin, nm, t_baby, nm2);
+        tank.light_override = false;
+#undef LV_RUN
     }
 #undef SHOP_TICK
 #undef SHOP_WANT
@@ -7193,6 +7266,26 @@ static int greyhound_shot(const char *prefix) {
     render_tank(&tank, fb, TANK_W); render_shop(&tank, fb, TANK_W); snprintf(path, sizeof path, "%s_ex_modal.ppm", prefix); write_ppm(path, fb);
     render_shop_leave(); tank.light_override = false;
 #undef SH_RUN
+    /* love across the species: the dog and the crab on a visit (hearts), and
+       six babies of different blends, young and grown */
+    { tank.sd_unlocks |= SD_ITEM_CRAB | SD_ITEM_SEAHORSE; tank_crab_place(&tank); tank_seahorse_place(&tank);
+      memset(tank.love, 0, sizeof tank.love); memset(tank.baby, 0, sizeof tank.baby); tank.love_check_in = 99999;
+      love_who_t dog = { LK_DOG, 0, 0 }, crab = { LK_CRAB, 0, 0 };
+      tank_love_fall(&tank, dog, crab); tank.love[0].visit_in = 0.05f; tank.love[0].baby_in = 999999;
+      for (int i = 0; i < 60 * 12; i++) { tank.light_override = true; tank.light_on = true; tank.hold_active = false; tank_tick(&tank, 1.0f / 60.0f, advisor_rules); }
+      static const uint8_t KA[6] = { LK_DOG, LK_FISH, LK_FISH, LK_DOG, LK_FISH, LK_DOG }, KB[6] = { LK_FISH, LK_CRAB, LK_SEAHORSE, LK_SNAIL, LK_URCHIN, LK_SEAHORSE };
+      static const uint32_t CB[6] = { 0x47c6c0, 0xe0414a, 0xf2a33a, 0xb07a44, 0x8a4fb4, 0xf2a33a };
+      for (int i = 0; i < 6; i++) {                                      /* (BABY_MAX is 4 in the tank; the still uses a copy) */
+          baby_t b; memset(&b, 0, sizeof b); b.alive = true; b.ka = KA[i]; b.kb = KB[i];
+          b.ca = KA[i] == LK_DOG ? 0xc8915a : 0xff8a3a; b.cb = CB[i]; b.age_s = (i & 1) ? BABY_GROW_S : 0;
+          b.x = 40 + i * 70; b.y = 120; b.facing = (i & 1) ? -1 : 1; b.phase = i;
+          if (i < BABY_MAX) tank.baby[i] = b;
+      }
+      render_tank(&tank, fb, TANK_W); snprintf(path, sizeof path, "%s_love.ppm", prefix); write_ppm(path, fb);
+      for (int i = 0; i < BABY_MAX; i++) { tank.baby[i].ka = KA[(i + 2) % 6]; tank.baby[i].kb = KB[(i + 2) % 6]; tank.baby[i].cb = CB[(i + 2) % 6];
+          tank.baby[i].ca = tank.baby[i].ka == LK_DOG ? 0xc8915a : 0x3fa0ff; tank.baby[i].happy = i == 1 ? 2.5f : 0; tank.baby[i].x = 60 + i * 95; }
+      render_tank(&tank, fb, TANK_W); snprintf(path, sizeof path, "%s_love2.ppm", prefix); write_ppm(path, fb);
+      tank.light_override = false; }
     tank.sd_unlocks &= ~SD_ITEM_GREYHOUND; tank.sd_balance = 520;
     render_shop_leave();
     for (int pg = 0; pg < 3; pg++) render_shop_tap(&tank, PAGE_X + SHP_ARROW_X1 + 4, PAGE_Y + SHP_ARROW_Y + 4);   /* the last page */
@@ -7501,6 +7594,10 @@ int main(int argc, char **argv) {
                 else if (selected_fish >= 0 && selected_fish != RENDER_CARD_SNAIL && selected_fish != RENDER_CARD_SHRIMP && selected_fish != RENDER_CARD_URCHIN
                          && selected_fish != RENDER_CARD_SEAHORSE && selected_fish != RENDER_CARD_CRAB && selected_fish != RENDER_CARD_GREYHOUND && RENDER_CARD_HIT(press_x, press_y))
                     milestones_view = true;
+                else if (tank_baby_hit(&tank, (float)press_x, (float)press_y) >= 0) {   /* a baby of love across the species: a wiggle, hearts, its name */
+                    int bi = tank_baby_hit(&tank, (float)press_x, (float)press_y); char nm[24];
+                    tank_baby_tap(&tank, bi); tank_baby_name(&tank.baby[bi], nm, sizeof nm); printf("baby: %s\n", nm);
+                }
                 else if (tank_ball_hit(&tank, (float)press_x, (float)press_y)) {   /* the ball: thrown, the dog fetches */
                     tank_ball_throw(&tank, (float)press_x, (float)press_y); printf("ball: thrown\n");
                 }

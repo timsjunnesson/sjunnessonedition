@@ -245,6 +245,14 @@ typedef struct {
     /* the shop's extras: the steps bought, the packs left */
     uint8_t  up_dog, up_ball, pad_up[2];
     int16_t  fine_left, treats_left;
+    /* love across the species: the pairs (kinds, a fish's index and its
+     * name's hash, the time in love, the time to the next baby), the babies
+     * (alive, its parents' kinds, its two colours, its age), and the wait
+     * for the next chance of love (0 = never written: the first wait) */
+    struct { uint8_t ka, ia, kb, ib; uint32_t ha, hb; float love_s, baby_in; uint32_t pad; } love[LOVE_PAIRS];
+    struct { uint8_t alive, ka, kb, pad; uint32_t ca, cb; float age_s; } baby[BABY_MAX];
+    float    love_check_in;
+    uint32_t pad_love;
 } save_t;
 /* the smallest PTK2 save (pre-upkeep, 2026-08-30): anything shorter is not
  * ours. Every later build wrote sizeof(save_t) of its day - 448, 1112, 1304,
@@ -350,7 +358,8 @@ _Static_assert(sizeof(save_t) >= 1944, "SAVE LAYOUT LOCK: save_t only ever grows
 SAVE_AT(mod_magic, MOD_TAIL_AT);                                                                       /* the greyhound mod's tail, past the gap */
 SAVE_AT(gh_s, MOD_TAIL_AT + 4); SAVE_AT(gh_pets, MOD_TAIL_AT + 8); SAVE_AT(gh_fetches, MOD_TAIL_AT + 12); SAVE_AT(gh_name, MOD_TAIL_AT + 16);
 SAVE_AT(up_dog, MOD_TAIL_AT + 20); SAVE_AT(up_ball, MOD_TAIL_AT + 21); SAVE_AT(fine_left, MOD_TAIL_AT + 24); SAVE_AT(treats_left, MOD_TAIL_AT + 26);
-_Static_assert(sizeof(save_t) == MOD_TAIL_AT + 32, "the mod's tail: 28 bytes of fields, padded to 8");
+SAVE_AT(love, MOD_TAIL_AT + 28); SAVE_AT(baby, MOD_TAIL_AT + 76); SAVE_AT(love_check_in, MOD_TAIL_AT + 140);   /* love across the species */
+_Static_assert(sizeof(save_t) == MOD_TAIL_AT + 152, "the mod's tail: 148 bytes of fields, padded to 8");
 /* NVS budget: the save is one blob in the nvs partition (0x9000, 0x6000 =
  * 6 pages of 4096 B; tools/make_installer.py pins the row). A page is 126
  * entries of 32 B, and NVS keeps one page free for its garbage collection:
@@ -1113,6 +1122,23 @@ static bool load_save(tank_t *t, int64_t *saved_unix) {
     t->ball_x = -1; t->ball_state = BALL_FLOAT;
     t->up_dog = sv.up_dog <= 3 ? sv.up_dog : 3; t->up_ball = sv.up_ball <= 2 ? sv.up_ball : 2;
     t->fine_left = sv.fine_left > 0 ? sv.fine_left : 0; t->treats_left = sv.treats_left > 0 ? sv.treats_left : 0;
+    memset(t->love, 0, sizeof t->love); memset(t->baby, 0, sizeof t->baby);
+    for (int p = 0; p < LOVE_PAIRS; p++) {            /* the pairs: checked against the tank at the first tick (a gone one ends) */
+        if (!sv.love[p].ka || sv.love[p].ka >= LK_KINDS || !sv.love[p].kb || sv.love[p].kb >= LK_KINDS) continue;
+        love_pair_t *L = &t->love[p];
+        L->a.kind = sv.love[p].ka; L->a.idx = sv.love[p].ia; L->a.hash = sv.love[p].ha;
+        L->b.kind = sv.love[p].kb; L->b.idx = sv.love[p].ib; L->b.hash = sv.love[p].hb;
+        L->love_s = sv.love[p].love_s > 0 ? sv.love[p].love_s : 0;
+        L->baby_in = sv.love[p].baby_in > 0 ? sv.love[p].baby_in : 0;
+        L->visit_in = tank_randf(t, 10, 60);
+    }
+    for (int i = 0; i < BABY_MAX; i++) {              /* the babies: back in the water at the first tick */
+        if (!sv.baby[i].alive || sv.baby[i].ka >= LK_KINDS || sv.baby[i].kb >= LK_KINDS) continue;
+        baby_t *b = &t->baby[i];
+        b->alive = true; b->ka = sv.baby[i].ka; b->kb = sv.baby[i].kb; b->ca = sv.baby[i].ca; b->cb = sv.baby[i].cb;
+        b->age_s = sv.baby[i].age_s > 0 ? sv.baby[i].age_s : 0; b->x = -1; b->facing = 1;
+    }
+    t->love_check_in = sv.love_check_in > 0 ? sv.love_check_in : LOVE_FIRST_S;
     s_sd_pending = 0;
     s_arrival_pending = sv.arrival_pending; s_spawn_in = -1;
     s_sale_need = sv.sale_meals_need > 0 ? sv.sale_meals_need : 0;
@@ -1366,6 +1392,19 @@ bool progression_save(tank_t *t) {
     if (t->sd_unlocks & SD_ITEM_GREYHOUND) {
         sv.gh_s = t->gh_s > 0 ? t->gh_s : 0; sv.gh_pets = t->gh_pets; sv.gh_fetches = t->gh_fetches; sv.gh_name = t->gh_name;
     }
+    for (int p = 0; p < LOVE_PAIRS; p++) {
+        const love_pair_t *L = &t->love[p];
+        if (!L->a.kind) continue;
+        sv.love[p].ka = L->a.kind; sv.love[p].ia = L->a.idx; sv.love[p].ha = L->a.hash;
+        sv.love[p].kb = L->b.kind; sv.love[p].ib = L->b.idx; sv.love[p].hb = L->b.hash;
+        sv.love[p].love_s = L->love_s; sv.love[p].baby_in = L->baby_in;
+    }
+    for (int i = 0; i < BABY_MAX; i++) {
+        const baby_t *b = &t->baby[i];
+        if (!b->alive) continue;
+        sv.baby[i].alive = 1; sv.baby[i].ka = b->ka; sv.baby[i].kb = b->kb; sv.baby[i].ca = b->ca; sv.baby[i].cb = b->cb; sv.baby[i].age_s = b->age_s;
+    }
+    sv.love_check_in = t->love_check_in > 0 ? t->love_check_in : LOVE_FIRST_S;
     sv.mod_magic = MOD_MAGIC; sv.up_dog = t->up_dog; sv.up_ball = t->up_ball; sv.fine_left = t->fine_left; sv.treats_left = t->treats_left;
     sv.setup_pending = s_setup_pending;
     sv.newborn_p1 = (uint8_t)(s_newborn >= 0 && s_newborn < t->n_fish ? s_newborn + 1 : 0);
